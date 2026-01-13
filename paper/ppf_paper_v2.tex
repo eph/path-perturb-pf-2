@@ -1,0 +1,585 @@
+
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{graphicx}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+\newtheorem{lemma}{Lemma}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\TV}{\|\cdot\|_{\mathrm{TV}}}
+\newcommand{\Wone}{\mathcal{W}_1}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\ip}[2]{\left\langle #1,#2\right\rangle}
+\newcommand{\dd}{\,\mathrm{d}}
+
+\title{Pathwise Perturbation Particle Filtering\\
+with Anticipated-Shock Quadrature and Piecewise Localization}
+\author{Ed \and \texttt{(coauthor to be added)}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We formalize a likelihood-evaluation strategy for nonlinear DSGE models based on \emph{pathwise} (a.k.a.\ extended-path) perfect-foresight solves and first-order linearizations around those paths.
+At each filtering step we augment the model with an auxiliary ``anticipated-shock'' object---a finite horizon of future structural innovations---that is used to approximate conditional expectations in the equilibrium conditions.
+Conditional on this auxiliary object (and on a discrete \emph{localization index} that encodes the relevant piece of the state space or the binding pattern of constraints), the model is linear-Gaussian: the one-step transition is Gaussian with parameters given by the pathwise Jacobians, and the measurement equation is assumed linear with Gaussian noise.
+Integrating out the auxiliary object yields a Gaussian-mixture transition kernel.
+This structure enables a Rao--Blackwellized particle filter that marginalizes the high-dimensional continuous state with a Kalman filter and samples only the low-dimensional auxiliary object and discrete localization index.
+
+We provide (i) a derivation of the conditional linear-Gaussian representation from the stacked equilibrium system via the implicit function theorem, (ii) sufficient conditions under which quadrature refinement converges to a well-defined mixture kernel and under which localization refinement yields a globally accurate piecewise-linear approximation, and (iii) stability-based bounds linking one-step kernel error to filtering and log-likelihood error.
+Finally, we propose a benchmark New Keynesian model with an effective lower bound (ELB) on the nominal rate and outline a comparison to OccBin and to the piecewise-linear continuous (PLC) solution and conditionally optimal particle filter (COPF) of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021}.
+\end{abstract}
+
+\noindent\textbf{Keywords:} nonlinear DSGE estimation; particle filter; Rao--Blackwellization; extended path; stochastic extended path; dynamic perturbation; sigma points; occasionally binding constraints; effective lower bound.\\
+\textbf{JEL:} C11, C15, C61, E32.
+
+\section{Introduction}
+
+Likelihood-based estimation of nonlinear DSGE models is difficult because the transition law for the latent state is both nonlinear and implicitly defined by equilibrium conditions with conditional expectations.
+A ``global solution'' (projection, value function iteration, Chebyshev/Smolyak, endogenous grid, etc.) can be accurate but often becomes expensive as the dimension of the state grows, and embedding the global solution inside particle filtering and MCMC can be prohibitive.
+
+This paper formalizes an alternative approximation strategy geared specifically toward likelihood evaluation:
+instead of approximating the policy function globally, we approximate the \emph{local} dynamics in the neighborhood of \emph{paths} that are relevant under the data.
+At each filtering step we solve for a finite-horizon equilibrium path under perfect foresight given a candidate sequence of future shocks, and then compute a first-order expansion around this path.
+This is the spirit of the Extended Path (EP) method of \citet{FairTaylor1983} and its stochastic generalizations \citep{AdjemianJuillard2025}, and is closely related to Dynamic Perturbation \citep{MennuniRubioRamirezStepanchuk2025}, which computes first-order expansions along an entire simulated equilibrium path.
+
+The novelty here is to place this pathwise approximation inside a \emph{filter}:
+we construct a time-varying linear-Gaussian approximation \emph{conditional} on an auxiliary ``anticipated-shock'' object and (when needed) a discrete localization index that represents a regime/binding pattern or a partition cell in state space.
+We then integrate out the auxiliary object by sigma points/quadrature, yielding a Gaussian-mixture kernel.
+This makes the model a Gaussian-sum state-space system \citep{AlspachSorenson1972}, which can be handled with a Rao--Blackwellized particle filter (RBPF) \citep{DoucetFreitasMurphyRussell2000}.
+With linear-Gaussian measurement equations, the RBPF marginalizes the large continuous state block by Kalman filtering conditional on the auxiliary variables.
+
+A central question, raised by Ed's motivating idea, is:
+\emph{when can such a method be ``better'' than either a global nonlinear solution or a bootstrap particle filter?}
+The answer depends on an explicit bias--variance--cost tradeoff.
+Pathwise linearization introduces approximation bias, but (i) it can be cheap relative to a global solution in large models because it relies on sparse Jacobians and linear solves, and (ii) Rao--Blackwellization can dramatically reduce Monte Carlo variance of likelihood estimates relative to a bootstrap particle filter in high-dimensional latent state spaces.
+
+Finally, a second question is convergence:
+\emph{as we add more approximation points, do we converge to something like a global solution?}
+Sigma-point refinement alone converges to a \emph{mixture-of-linearizations} kernel, not necessarily to the true kernel.
+Convergence to the true transition requires a refinement scheme that also shrinks the local-linearization and horizon/expectation-approximation errors.
+We provide one such scheme based on a discrete localization index that refines a partition of the state space or the binding pattern of constraints.
+
+\section{Nonlinear state-space model}
+
+\subsection{Latent state and measurement}
+Let $(x_t)_{t\ge 0}$ be an $\R^{n_x}$-valued latent state and $(y_t)_{t\ge 1}$ observed data.
+We assume a linear measurement equation with Gaussian noise:
+\begin{equation}
+y_t = H x_t + \eta_t,\qquad \eta_t\sim \mathcal{N}(0,R),
+\label{eq:meas}
+\end{equation}
+where $H$ and $R$ may depend on parameters $\theta$.
+
+\subsection{Equilibrium transition and Gaussian shocks}
+The state transition is induced by DSGE equilibrium conditions and structural innovations.
+For exposition we write it as a Markov mapping
+\begin{equation}
+x_{t+1} = F(x_t,\varepsilon_{t+1};\theta),\qquad \varepsilon_{t+1}\sim \mathcal{N}(0,\Sigma),
+\label{eq:true_transition}
+\end{equation}
+even though in DSGEs $F$ is usually not available in closed form.
+
+Let $K_\theta(x,\cdot)$ denote the true Markov kernel of $x_{t+1}\mid x_t=x$ induced by \eqref{eq:true_transition}.
+
+\section{From stacked equilibrium conditions to a conditional linear-Gaussian law}
+
+This section derives the object the filter will use: a Gaussian approximation to $K_\theta(x_t,\cdot)$ conditional on an auxiliary object (anticipated shocks) and a discrete localization index.
+
+\subsection{A finite-horizon ``stochastic perfect foresight'' system}
+
+Fix a horizon $H\ge 2$.
+Let
+\[
+\omega_t = (\varepsilon_{t+1}^a,\varepsilon_{t+2}^a,\ldots,\varepsilon_{t+H-1}^a)\in \R^{d},
+\qquad d=(H-1)n_\varepsilon,
+\]
+collect a sequence of \emph{anticipated} shocks over the horizon.
+We treat $\omega_t$ as an auxiliary variable drawn from the Gaussian law induced by the shock process:
+\[
+\omega_t \sim \mathcal{N}(0,\Omega),\qquad \Omega=\mathrm{diag}(\Sigma,\ldots,\Sigma).
+\]
+Conceptually, $\omega_t$ is a numerical device used to approximate conditional expectations, not an additional structural shock.
+
+Let $X_{t:t+H-1}=(x_t,x_{t+1},\ldots,x_{t+H-1})$ and define a stacked residual mapping
+\[
+\mathcal{R}(X_{t:t+H-1};x_t,\omega_t,\theta)=0
+\]
+encoding equilibrium conditions from $t$ through $t+H-2$ plus a terminal condition at $t+H-1$ (e.g.\ $x_{t+H-1}\approx x^\star$).
+In practice this is the system solved in EP/SEP and in perfect-foresight solvers \citep{FairTaylor1983,AdjemianJuillard2025}.
+We denote by
+\[
+\bar X_{t:t+H-1}=\bar X(x_t,\omega_t;\theta)
+\]
+a solution of the stacked system.
+
+\subsection{Local perturbations around the path}
+
+Define deviations $\tilde x_s = x_s-\bar x_s$ for $s=t,\ldots,t+H-1$.
+Linearizing $\mathcal{R}$ at $\bar X$ yields a sparse block system linking $\tilde x_{t:t+H-1}$ to \emph{unexpected} innovations.
+To keep the derivation transparent, we focus on the one-step mapping from $(x_t,\varepsilon_{t+1})$ to $x_{t+1}$.
+Let $\varepsilon_{t+1}$ be the \emph{unexpected} shock realization at $t+1$ (mean zero).
+Then the linearized system implies
+\begin{equation}
+\tilde x_{t+1}
+=
+A_t(x_t,\omega_t)\,\tilde x_t
++
+B_t(x_t,\omega_t)\,\varepsilon_{t+1},
+\label{eq:lin_dev}
+\end{equation}
+where $A_t,B_t$ are obtained from the Jacobian of the stacked system (details in Appendix~\ref{app:ift}).
+
+Equation \eqref{eq:lin_dev} yields a \emph{conditional} linear-Gaussian transition:
+\begin{equation}
+x_{t+1}\mid (x_t,\omega_t)
+\;\approx\;
+\mathcal{N}\!\left(m(x_t,\omega_t),\,Q(x_t,\omega_t)\right),
+\label{eq:cond_gauss}
+\end{equation}
+with
+\[
+m(x_t,\omega_t)=\bar x_{t+1}+A_t(x_t,\omega_t)\,(x_t-\bar x_t),
+\qquad
+Q(x_t,\omega_t)=B_t(x_t,\omega_t)\,\Sigma\,B_t(x_t,\omega_t)^\top.
+\]
+
+\begin{remark}[Relation to dynamic perturbation and SEP]
+Dynamic perturbation \citep{MennuniRubioRamirezStepanchuk2025} also computes first-order expansions along equilibrium paths.
+SEP \citep{AdjemianJuillard2025} integrates over future shocks to better approximate conditional expectations than certainty equivalence.
+The PPPF construction can be viewed as: (i) using a SEP-style draw/quadrature node $\omega_t$ to build the reference path, (ii) computing a dynamic-perturbation-style linearization around that path, and (iii) integrating out $\omega_t$ inside a filter.
+\end{remark}
+
+\section{Integrating out anticipated shocks}
+
+\subsection{Gaussian-mixture transition kernel}
+
+Integrating out $\omega_t$ yields an approximate transition kernel
+\begin{equation}
+\widehat K_\theta(x_t,\dd x_{t+1})
+=
+\int
+\mathcal{N}\!\left(\dd x_{t+1};\,m(x_t,\omega),Q(x_t,\omega)\right)\,
+\phi(\omega;0,\Omega)\,\dd\omega.
+\label{eq:mixture_kernel}
+\end{equation}
+This is a Gaussian mixture (Gaussian-sum) transition \citep{AlspachSorenson1972}.
+In practice we replace the integral by a $K$-node rule (sigma points, Gauss--Hermite, sparse grids, quasi-Monte Carlo, or Monte Carlo):
+\begin{equation}
+\widehat K_{\theta,K}(x_t,\dd x_{t+1})
+=
+\sum_{k=1}^K w_k\,
+\mathcal{N}\!\left(\dd x_{t+1};\,m(x_t,\omega^{(k)}),Q(x_t,\omega^{(k)})\right),
+\qquad \sum_{k=1}^K w_k=1.
+\label{eq:quadrature_kernel}
+\end{equation}
+
+\subsection{Sigma points as deterministic ``anticipated shock'' draws}
+
+For $\omega\sim \mathcal{N}(0,\Omega)\in\R^d$, the basic unscented transform uses $2d+1$ sigma points and associated weights that match mean and covariance and are exact for polynomials up to degree three (for symmetric choices) \citep{JulierUhlmann2004}.
+Sigma points are attractive when $d$ is small (e.g.\ a small number of shocks and short horizon).
+
+\section{Discrete localization and ``globalization'' of the approximation}
+
+Sigma-point refinement controls the numerical integration error in \eqref{eq:mixture_kernel}, but does \emph{not} by itself eliminate the local-linearization and horizon/terminal-condition errors.
+This section introduces a second approximation axis that can yield a genuine global refinement scheme.
+
+\subsection{Localization index: partition cells or regime/binding patterns}
+
+Let $s_t\in\{1,\ldots,J\}$ be a discrete localization index.
+Two cases are especially relevant:
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+\item \textbf{State-space partition.}
+Partition a compact set $\mathcal{X}\subset\R^{n_x}$ into cells $\{\mathcal{X}_j\}_{j=1}^J$ and choose anchors $x^{(j)}\in\mathcal{X}_j$.
+For each anchor (and each quadrature node $\omega^{(k)}$) compute and store $(\bar x_{t+1}^{(j,k)},A^{(j,k)},B^{(j,k)})$.
+At runtime, map each $x_t$ to its cell index $s_t=j$ and use the corresponding precomputed linearization parameters.
+This turns online path solving into offline precomputation plus fast lookup/interpolation.
+
+\item \textbf{Occasionally binding constraints (OBCs).}
+Let $s_t$ encode the binding/slack pattern of a constraint over the horizon (a regime path).
+OccBin \citep{GuerrieriIacoviello2015} selects a regime path by iterating on guesses until the constraint is satisfied.
+In a filter, the regime can be treated as latent: particles can branch over regimes and the filter integrates over them.
+Aruoba et al.\ \citep{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} construct globally piecewise-linear and continuous decision rules and derive a conditionally optimal particle filter (COPF) that exploits this structure.
+Our framework nests the idea of treating the binding pattern as a discrete index that makes the conditional system linear.
+\end{enumerate}
+
+\subsection{A simple approximation theorem for localization refinement}
+
+To formalize ``convergence to global'' under partition refinement, we state a generic result.
+For simplicity, consider a setting where $(m(x,\omega),Q(x,\omega))$ is smooth in $x$ for each $\omega$ (away from kinks).
+Let $\widehat m_J(x,\omega)$ and $\widehat Q_J(x,\omega)$ be piecewise-linear approximations built from anchors with mesh size
+\[
+\Delta_J = \max_{j\le J} \sup_{x\in\mathcal{X}_j}\|x-x^{(j)}\|.
+\]
+
+\begin{assumption}[Smoothness in $x$]
+For each $\omega$ in the support of the quadrature rule and all $x\in\mathcal{X}$, the maps $x\mapsto m(x,\omega)$ and $x\mapsto Q(x,\omega)$ are twice continuously differentiable with uniformly bounded second derivatives.
+\end{assumption}
+
+\begin{proposition}[Localization refinement implies uniform parameter convergence]
+Under the smoothness assumption, there exists $C<\infty$ such that
+\[
+\sup_{x\in\mathcal{X}} \|m(x,\omega)-\widehat m_J(x,\omega)\|\le C \Delta_J^2,
+\qquad
+\sup_{x\in\mathcal{X}} \|Q(x,\omega)-\widehat Q_J(x,\omega)\|\le C \Delta_J^2,
+\]
+for each fixed $\omega$, provided $\widehat m_J,\widehat Q_J$ are constructed by first-order Taylor (or equivalent local linear) approximations on each cell.
+Hence if $\Delta_J\to 0$ as $J\to\infty$, then the approximation error vanishes uniformly.
+\end{proposition}
+
+\begin{remark}
+This is the standard ``mesh $\to 0$'' globalization logic: piecewise linearization converges for smooth maps.
+For OBCs, the map is typically only piecewise smooth and the rate can degrade near the kink.
+In that case one refines the partition more aggressively near the kink set, or treats the kink via an explicit discrete regime as in OccBin and PLC/COPF.
+\end{remark}
+
+\section{Filtering and likelihood evaluation}
+
+\subsection{Gaussian-sum representation}
+
+Under \eqref{eq:quadrature_kernel}, the approximate transition can be written by introducing a discrete index $k_t\in\{1,\ldots,K\}$ with $\Pr(k_t=k)=w_k$:
+\[
+x_{t+1}\mid (x_t,k_t=k) \sim \mathcal{N}(m_k(x_t),Q_k(x_t)).
+\]
+With localization $s_t$, the index becomes $(s_t,k_t)$.
+
+\subsection{Rao--Blackwellized particle filter}
+
+Because the measurement is linear-Gaussian and the transition is conditionally Gaussian given $(s_t,k_t)$, we can marginalize the continuous state by Kalman filtering conditional on each particle's discrete history.
+A Rao--Blackwellized particle filter (RBPF) samples $(s_t,k_t)$ (or, in a continuous version, samples $\omega_t$) and updates the conditional Gaussian state distribution analytically \citep{DoucetFreitasMurphyRussell2000}.
+
+\subsection{Algorithmic detail: mixture handling}
+
+A key practical point is \emph{mixture handling}.
+Given a mixture transition $\sum_k w_k \mathcal{N}(m_k,Q_k)$, averaging the means $m_k$ and covariances $Q_k$ to obtain a single Gaussian is generally incorrect; it destroys tail behavior and Jensen effects.
+Instead, one must treat the mixture either by branching (expanding particles) or by sampling $k$ and accounting for the mixture density in the proposal.
+
+In the RBPF setting, branching corresponds to spawning children for each $(s,k)$ and then resampling.
+Sampling corresponds to drawing $(s,k)$ from their prior weights (or an auxiliary proposal) and updating particle weights accordingly.
+
+\section{Approximation theory: kernel, filter, and likelihood}
+
+\subsection{Quadrature refinement converges to the mixture kernel}
+
+Let $\widehat K_\theta$ be the mixture kernel \eqref{eq:mixture_kernel} and $\widehat K_{\theta,K}$ its $K$-node quadrature approximation \eqref{eq:quadrature_kernel}.
+
+\begin{assumption}[Quadrature consistency]
+The quadrature rules $(\omega^{(k)},w_k)_{k=1}^K$ are consistent for the Gaussian measure $\mathcal{N}(0,\Omega)$:
+\[
+\sum_{k=1}^K w_k h(\omega^{(k)}) \to \int h(\omega)\,\phi(\omega;0,\Omega)\,\dd\omega
+\quad \text{for all bounded continuous } h.
+\]
+\end{assumption}
+
+\begin{proposition}[Weak convergence of $\widehat K_{\theta,K}\to \widehat K_\theta$]
+Assume $(m(x,\omega),Q(x,\omega))$ is continuous in $\omega$ for each fixed $x$ and that dominated convergence applies to the Gaussian density integrand.
+Then for each fixed $x$ and each bounded continuous test function $\psi$,
+\[
+\int \psi(x')\,\widehat K_{\theta,K}(x,\dd x') \to \int \psi(x')\,\widehat K_{\theta}(x,\dd x').
+\]
+\end{proposition}
+
+\begin{remark}
+This convergence holds to the mixture kernel $\widehat K_\theta$, not to the true DSGE kernel $K_\theta$.
+Closing the remaining gap requires controlling the local-linearization error, horizon truncation/terminal-condition error, and expectation-approximation error in the underlying stochastic perfect-foresight step.
+\end{remark}
+
+\subsection{Kernel error decomposition}
+
+Write the total kernel error as
+\[
+\|K_\theta(x,\cdot)-\widehat K_{\theta,K,J}(x,\cdot)\|
+\;\le\;
+\underbrace{\|K_\theta-\widetilde K_{\theta,H,p}\|}_{\text{horizon/expectation approximation}}
++
+\underbrace{\|\widetilde K_{\theta,H,p}-\widehat K_{\theta}\|}_{\text{local linearization}}
++
+\underbrace{\|\widehat K_{\theta}-\widehat K_{\theta,K}\|}_{\text{quadrature}}
++
+\underbrace{\|\widehat K_{\theta,K}-\widehat K_{\theta,K,J}\|}_{\text{localization}},
+\]
+where $\widetilde K_{\theta,H,p}$ denotes the kernel induced by the \emph{exact} finite-horizon stochastic perfect-foresight solution with $p$ periods of expectation integration (no linearization), and $\widehat K_{\theta,K,J}$ denotes the practical PPPF kernel with $K$ quadrature nodes and localization mesh index $J$.
+
+\subsection{From kernel error to filter and likelihood error}
+
+Let $\delta=\sup_{x\in\mathcal{X}} \|K_\theta(x,\cdot)-\widehat K_{\theta,K,J}(x,\cdot)\|_{\mathrm{TV}}$ be the worst-case one-step kernel error.
+Under standard mixing/forgetting conditions for hidden Markov models, errors in the transition kernel propagate to errors in filtering distributions and predictive likelihoods; see, e.g., \citet{DelMoral2004,Whiteley2013,KantasDoucetSinghMaciejowski2015}.
+
+\begin{assumption}[Uniform mixing and bounded likelihood]
+There exists $\epsilon\in(0,1)$ and a probability measure $\nu$ on $\mathcal{X}$ such that for all $x\in\mathcal{X}$ and measurable $A$,
+\[
+K_\theta(x,A)\ge \epsilon \nu(A),
+\]
+and the measurement density satisfies $0< g_{\min}\le g_\theta(y\mid x)\le g_{\max}<\infty$ for all $x\in\mathcal{X}$ and realized $y_t$.
+\end{assumption}
+
+\begin{theorem}[Filter perturbation bound (standard form)]
+Under the mixing and bounded-likelihood assumption, there exist constants $C<\infty$ and $\rho\in(0,1)$ such that the filtering distributions satisfy
+\[
+\|\pi_{\theta,t}-\widehat \pi_{\theta,t}\|_{\mathrm{TV}}
+\le
+C \sum_{s=1}^{t} \rho^{t-s}\, \delta,
+\qquad t\ge 1.
+\]
+\end{theorem}
+
+\begin{corollary}[Log-likelihood perturbation bound (sketch)]
+Under the same conditions, there exists $C_\ell<\infty$ such that
+\[
+\left| \log p_\theta(y_{1:T}) - \log \widehat p_\theta(y_{1:T}) \right|
+\le
+C_\ell\, T\, \delta
+\]
+up to geometric forgetting factors.
+\end{corollary}
+
+\section{When can PPPF be ``better'' than a global solution?}
+
+Let $\ell_\theta$ denote the \emph{true} log-likelihood and let $\widehat \ell_\theta^{(A)}$ be a particle-based estimator using approximation strategy $A\in\{\mathrm{glob},\mathrm{pppf}\}$.
+Under a compute budget $C$, the feasible particle count is roughly $N_A \approx C/c_A$, where $c_A$ is cost per particle per period.
+
+A standard decomposition is
+\[
+\E\left[(\widehat \ell_\theta^{(A)}-\ell_\theta)^2\right]
+=
+\underbrace{\big(\mathrm{Bias}_A\big)^2}_{\text{approximation bias}}
++
+\underbrace{\frac{\sigma_A^2}{N_A}}_{\text{Monte Carlo variance}}.
+\]
+Rao--Blackwellization reduces $\sigma_{\mathrm{pppf}}^2$ by integrating out (part of) the latent state analytically \citep{DoucetFreitasMurphyRussell2000}.
+A sufficient ``dominance'' condition is therefore:
+\[
+(\mathrm{Bias}_{\mathrm{pppf}})^2 + \sigma_{\mathrm{pppf}}^2 \frac{c_{\mathrm{pppf}}}{C}
+<
+(\mathrm{Bias}_{\mathrm{glob}})^2 + \sigma_{\mathrm{glob}}^2 \frac{c_{\mathrm{glob}}}{C}.
+\]
+This inequality makes explicit why PPPF can lose in small models (high $c_{\mathrm{pppf}}$, weak RB gains) but win in large models where the global solution is expensive and RB gains are large.
+
+\section{Benchmark: a New Keynesian model with an ELB}
+
+This section specifies a concrete benchmark that directly connects to the OccBin and PLC/COPF literatures.
+
+\subsection{Core equilibrium conditions}
+
+We consider a canonical three-equation New Keynesian model with an effective lower bound (ELB) on the nominal rate.
+Let $x_t$ denote the output gap, $\pi_t$ inflation, and $i_t$ the nominal interest rate (deviations from steady state, appropriately scaled).
+A standard log-linearized NK system is
+\begin{align}
+x_t &= \E_t x_{t+1} - \sigma^{-1}\Big(i_t - \E_t \pi_{t+1} - r_t^n\Big), \label{eq:nk_is}\\
+\pi_t &= \beta \E_t \pi_{t+1} + \kappa x_t, \label{eq:nk_pc}\\
+i_t^\star &= \phi_\pi \pi_t + \phi_x x_t + \nu_t, \label{eq:taylor}\\
+i_t &= \max\{ \underline i,\; i_t^\star\}. \label{eq:elb}
+\end{align}
+Here $r_t^n$ is a natural-rate (or preference) shock and $\nu_t$ a monetary policy shock; both follow AR(1) laws with Gaussian innovations.
+Appendix~\ref{app:nk} provides a brief microfoundation and discusses common variations (habit, indexation, wage rigidities).
+
+The occasionally binding ELB constraint \eqref{eq:elb} introduces a kink and makes the decision rules nonlinear and piecewise smooth.
+
+\subsection{State-space representation and measurement}
+
+A minimal latent state can be
+\[
+x_t^{\mathrm{state}} = (x_t,\pi_t,i_t,r_t^n,\nu_t)^\top,
+\]
+with observables
+\[
+y_t = (x_t^{\mathrm{obs}},\pi_t^{\mathrm{obs}},i_t^{\mathrm{obs}})^\top,
+\qquad
+y_t = H x_t^{\mathrm{state}} + \eta_t.
+\]
+Because the ELB affects the transition, likelihood evaluation requires a nonlinear filter unless the solution imposes a structure that can be exploited.
+
+\subsection{Competing methods}
+
+We propose comparing three likelihood-evaluation strategies:
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+\item \textbf{OccBin (piecewise linear perturbation) + bootstrap PF / inversion filter.}
+OccBin \citep{GuerrieriIacoviello2015} computes a piecewise linear solution by iterating on the binding pattern of \eqref{eq:elb} over a finite horizon.
+Likelihood evaluation can be done by a bootstrap particle filter, and several papers use inversion-filter variants when the observables identify shocks (or approximately identify them).
+
+\item \textbf{Piecewise-linear continuous (PLC) decision rules + COPF.}
+\citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} construct globally piecewise-linear and continuous decision rules for OBC models and derive a \emph{conditionally optimal} particle filter (COPF) that exploits the piecewise-linear structure to reduce likelihood variance.
+
+\item \textbf{PPPF with anticipated-shock quadrature and regime localization.}
+In the PPPF approach, we treat the ELB binding pattern over the EP horizon as part of the localization index $s_t$ and integrate over short-horizon anticipated shocks $\omega_t$ by sigma points/quadrature.
+Conditional on $(s_t,\omega_t)$ the system is linear, enabling Rao--Blackwellization.
+\end{enumerate}
+
+\subsection{Proposed evaluation metrics}
+
+Because particle filters yield stochastic likelihood approximations, the key objects for comparison are:
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item runtime per likelihood evaluation,
+\item Monte Carlo variance of the log-likelihood estimate (across repeated PF runs on fixed data),
+\item effective sample size (ESS) profiles and frequency of resampling,
+\item impulse responses: nonlinear ``true'' (high-accuracy) vs OccBin/PLC vs PPPF.
+\end{itemize}
+This benchmark is designed to highlight cases where PPPF can plausibly outperform a naive bootstrap PF: near the ELB kink, the conditional Gaussian structure and regime-aware localization can provide substantially better proposals and variance reduction.
+
+\section{Conclusion}
+
+PPPF replaces a global nonlinear approximation of DSGE policy functions with many local linearizations around stochastic perfect-foresight paths, integrating over an anticipated-shock object by sigma points/quadrature and optionally over regimes via a discrete localization index.
+With Gaussian shocks and linear measurement equations, this yields a Gaussian-mixture state-space model amenable to Rao--Blackwellized particle filtering.
+We provided derivations, convergence statements for quadrature and localization refinement, and stability-based links from kernel error to likelihood error.
+A New Keynesian ELB benchmark offers a natural comparison to the OccBin and PLC/COPF literatures.
+
+\appendix
+
+\section{Deriving the conditional linear system via the implicit function theorem}
+\label{app:ift}
+
+This appendix provides a derivation of \eqref{eq:lin_dev} from the stacked residual system.
+Let $Y$ denote the stacked unknowns over the horizon excluding the pinned initial state:
+\[
+Y = (x_{t+1},x_{t+2},\ldots,x_{t+H-1})\in \R^{(H-1)n_x}.
+\]
+Write the stacked equilibrium conditions as
+\[
+\mathcal{F}(Y;x_t,\omega_t,\theta)=0.
+\]
+Suppose $\bar Y$ solves the system for given $(x_t,\omega_t)$.
+Assume the Jacobian with respect to $Y$ is nonsingular:
+\[
+D_Y \mathcal{F}(\bar Y;x_t,\omega_t,\theta)\;\;\text{is invertible}.
+\]
+Then by the implicit function theorem there exists a local mapping $Y=G(x_t,\omega_t)$ with derivatives
+\[
+D_{x}G = -\big(D_Y\mathcal{F}\big)^{-1} D_x \mathcal{F},
+\qquad
+D_{\omega}G = -\big(D_Y\mathcal{F}\big)^{-1} D_\omega \mathcal{F}.
+\]
+To incorporate an \emph{unexpected} shock $\varepsilon_{t+1}$, one augments the residual function to include the contemporaneous shock in the appropriate period-$t+1$ equations, and differentiates with respect to $\varepsilon_{t+1}$.
+Because $D_Y\mathcal{F}$ is sparse block-banded (typically block tridiagonal for one-step-ahead expectations), solving for these derivatives amounts to solving a sparse linear system, which is computationally attractive in large DSGEs.
+
+Extracting the first block row of $D_x G$ gives the mapping from $x_t$ perturbations to $x_{t+1}$ perturbations, yielding $A_t$.
+Similarly, the first block row of $D_{\varepsilon} G$ gives $B_t$.
+Plugging into $x_{t+1}=\bar x_{t+1}+\tilde x_{t+1}$ gives \eqref{eq:lin_dev}.
+
+\section{Unscented-transform sigma points}
+\label{app:ut}
+
+For $\omega\sim\mathcal{N}(0,\Omega)\in\R^d$, the basic sigma-point set uses $2d+1$ points:
+\[
+\omega^{(0)}=0,\qquad
+\omega^{(i)}=+\left[\sqrt{(d+\lambda)\Omega}\right]_{\cdot i},\qquad
+\omega^{(i+d)}=-\left[\sqrt{(d+\lambda)\Omega}\right]_{\cdot i},
+\quad i=1,\ldots,d,
+\]
+with weights
+\[
+w_0^m=\frac{\lambda}{d+\lambda},\qquad w_i^m=\frac{1}{2(d+\lambda)}\;\;(i\ge 1),
+\]
+and covariance weights $w_0^c=w_0^m + (1-\alpha^2+\beta)$, $w_i^c=w_i^m$.
+Standard choices are $\alpha\in(0,1]$, $\beta=2$ (Gaussian prior), $\kappa=0$ \citep{JulierUhlmann2004}.
+
+\section{Microfoundation and variants of the NK--ELB benchmark}
+\label{app:nk}
+
+Equations \eqref{eq:nk_is}--\eqref{eq:nk_pc} arise from household Euler equations and Calvo price setting under standard assumptions; see \citet{Woodford2003} for a textbook derivation.
+The ELB \eqref{eq:elb} is an occasionally binding constraint.
+In empirical work one often uses a shadow-rate specification or introduces additional wedges, but the essential computational feature is the kink introduced by the max operator.
+
+\begin{thebibliography}{99}
+
+\bibitem[Adjemian and Juillard(2025)]{AdjemianJuillard2025}
+Adjemian, S. and M. Juillard (2025).
+\newblock Stochastic extended path.
+\newblock \emph{Dynare Working Papers} No.\ 84, revised September 2025.
+
+\bibitem[Alspach and Sorenson(1972)]{AlspachSorenson1972}
+Alspach, D. L. and H. W. Sorenson (1972).
+\newblock Nonlinear Bayesian estimation using Gaussian sum approximations.
+\newblock \emph{IEEE Transactions on Automatic Control} 17(4), 439--448.
+
+\bibitem[Aruoba et~al.(2021)]{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021}
+Aruoba, S. B., P. Cuba-Borda, K. Higa-Flores, F. Schorfheide, and S. Villalvazo (2021).
+\newblock Piecewise-linear approximations and filtering for DSGE models with occasionally binding constraints.
+\newblock \emph{Review of Economic Dynamics} 41, 96--120.
+\newblock DOI: 10.1016/j.red.2020.12.003.
+
+\bibitem[Del~Moral(2004)]{DelMoral2004}
+Del~Moral, P. (2004).
+\newblock \emph{Feynman--Kac Formulae: Genealogical and Interacting Particle Systems with Applications}.
+\newblock Springer.
+
+\bibitem[Doucet et~al.(2000)]{DoucetFreitasMurphyRussell2000}
+Doucet, A., N. de~Freitas, K. Murphy, and S. Russell (2000).
+\newblock Rao--Blackwellised particle filtering for dynamic Bayesian networks.
+\newblock In \emph{Proceedings of the Sixteenth Conference on Uncertainty in Artificial Intelligence (UAI)}.
+
+\bibitem[Fair and Taylor(1983)]{FairTaylor1983}
+Fair, R. C. and J. B. Taylor (1983).
+\newblock Solution and maximum likelihood estimation of dynamic nonlinear rational expectations models.
+\newblock \emph{Econometrica} 51(4), 1169--1185.
+
+\bibitem[Guerrieri and Iacoviello(2015)]{GuerrieriIacoviello2015}
+Guerrieri, L. and M. Iacoviello (2015).
+\newblock OccBin: A toolkit for solving dynamic models with occasionally binding constraints easily.
+\newblock \emph{Journal of Monetary Economics} 70, 22--38.
+\newblock DOI: 10.1016/j.jmoneco.2014.08.005.
+
+\bibitem[Gust et~al.(2017)]{GustHerbstLopezSalidoSmith2017}
+Gust, C., E. Herbst, D. L{\'o}pez-Salido, and M. E. Smith (2017).
+\newblock The empirical implications of the interest-rate lower bound.
+\newblock \emph{American Economic Review} 107(7), 1971--2006.
+\newblock DOI: 10.1257/aer.20121437.
+
+\bibitem[Herbst and Schorfheide(2019)]{HerbstSchorfheide2019}
+Herbst, E. and F. Schorfheide (2019).
+\newblock Tempered particle filtering.
+\newblock \emph{Journal of Econometrics} 210(1), 26--44.
+
+\bibitem[Julier and Uhlmann(2004)]{JulierUhlmann2004}
+Julier, S. J. and J. K. Uhlmann (2004).
+\newblock Unscented filtering and nonlinear estimation.
+\newblock \emph{Proceedings of the IEEE} 92(3), 401--422.
+
+\bibitem[Kantas et~al.(2015)]{KantasDoucetSinghMaciejowski2015}
+Kantas, N., A. Doucet, S. Singh, and J. Maciejowski (2015).
+\newblock On particle methods for parameter estimation in state-space models.
+\newblock \emph{Statistical Science} 30(3), 328--351.
+
+\bibitem[Mennuni et~al.(2025)]{MennuniRubioRamirezStepanchuk2025}
+Mennuni, A., J. F. Rubio-Ram{\'\i}rez, and S. Stepanchuk (2025).
+\newblock Dynamic perturbation.
+\newblock \emph{The Review of Economic Studies} 92(2), 1157--1192.
+\newblock DOI: 10.1093/restud/rdae037.
+
+\bibitem[Whiteley(2013)]{Whiteley2013}
+Whiteley, N. (2013).
+\newblock Stability properties of some particle filters.
+\newblock \emph{The Annals of Applied Probability} 23(6), 2500--2537.
+
+\bibitem[Woodford(2003)]{Woodford2003}
+Woodford, M. (2003).
+\newblock \emph{Interest and Prices: Foundations of a Theory of Monetary Policy}.
+\newblock Princeton University Press.
+
+\end{thebibliography}
+
+\end{document}
