@@ -14,6 +14,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
@@ -34,6 +35,19 @@ struct NkExperimentConfig {
   std::uint64_t seed_data = 0;
   double shock_eps_r_irf = -2.0;
   int omega_horizon = 1;  // number of anticipated innovations at t+2.. included in omega (per shock)
+};
+
+enum class AnchorMode { Shared = 0, PerParticle = 1 };
+
+enum class PppfIMeasMode { Censored = 0, Linear = 1 };
+
+struct PppfOptions {
+  double omega_var = 1.0;
+  int omega_horizon = 1;
+  bool optimal_index_proposal = true;
+  AnchorMode anchor_mode = AnchorMode::Shared;
+  PppfIMeasMode i_meas_mode = PppfIMeasMode::Censored;
+  models::PppfRegimeMode regime_mode = models::PppfRegimeMode::EndogenousByNode;
 };
 
 struct NkLinearCoeffs {
@@ -247,14 +261,14 @@ RunResult run_occbin_bootstrap_pf(const models::NkParams& p, int N, const Eigen:
 
 RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::Vector4d& mean0,
                                const Eigen::Matrix4d& cov0, const std::vector<Eigen::VectorXd>& y,
-                               const Eigen::Matrix3d& R, std::uint64_t seed,
-                               double omega_var = 1.0, int omega_horizon = 1) {
+                               const Eigen::Matrix3d& R, std::uint64_t seed, const PppfOptions& opt) {
   util::Rng rng(seed);
   util::Timer timer;
 
   const auto mixture_builder = [&](int /*t*/, const Eigen::VectorXd& ref_prev) {
     const Eigen::Vector4d z_ref = ref_prev;
-    return models::build_pppf_mixture(p, z_ref, omega_horizon, omega_var);
+    return models::build_pppf_mixture(p, z_ref, opt.omega_horizon, opt.omega_var, /*eps_r_mean=*/0.0,
+                                      /*eps_r_var=*/1.0, /*eps_nu_var=*/1.0, opt.regime_mode);
   };
 
   const auto obs_update = [&](int /*t*/, const Eigen::VectorXd& y_t, int /*k*/,
@@ -271,15 +285,27 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
 
     double ll = statespace::kalman_update(Hlin, dlin, Rlin, ylin, st);
 
-    // Censored measurement for i: i = max(i_lower, i_ss + phi_pi*pi + phi_x*x + nu) + noise.
     const Eigen::RowVector4d h_rule =
         (Eigen::RowVector4d() << p.phi_x, p.phi_pi, 0.0, 1.0).finished();
-    ll += statespace::kalman_update_censored_lower(h_rule, p.i_ss, p.i_lower, R(2, 2), y_t(2), st);
+    if (opt.i_meas_mode == PppfIMeasMode::Censored) {
+      ll += statespace::kalman_update_censored_lower(h_rule, p.i_ss, p.i_lower, R(2, 2), y_t(2), st);
+    } else {
+      Eigen::Matrix<double, 1, 4> Hi;
+      Hi = h_rule;
+      Eigen::VectorXd di(1);
+      di(0) = p.i_ss;
+      Eigen::MatrixXd Ri(1, 1);
+      Ri(0, 0) = R(2, 2);
+      Eigen::VectorXd yi(1);
+      yi(0) = y_t(2);
+      ll += statespace::kalman_update(Hi, di, Ri, yi, st);
+    }
     return ll;
   };
 
   const filters::RbpfDiagnostics diag =
-      filters::rbpf(N, mean0, cov0, y, mixture_builder, obs_update, rng, 0.5, true);
+      filters::rbpf(N, mean0, cov0, y, mixture_builder, obs_update, rng, 0.5, opt.optimal_index_proposal,
+                    opt.anchor_mode == AnchorMode::PerParticle);
 
   RunResult res;
   res.loglik = diag.loglik;
@@ -474,9 +500,14 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
     }
 
     {
-      const RunResult rr =
-          run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, /*omega_var=*/1.0,
-                                /*omega_horizon=*/cfg.omega_horizon);
+      PppfOptions opt;
+      opt.omega_var = 1.0;
+      opt.omega_horizon = cfg.omega_horizon;
+      opt.optimal_index_proposal = true;
+      opt.anchor_mode = AnchorMode::Shared;
+      opt.i_meas_mode = PppfIMeasMode::Censored;
+      opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
+      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, opt);
       loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
       rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
       util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
@@ -760,16 +791,21 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
       }
     }
 
-    {
-      // In a linear-Gaussian no-ELB model, expectation integration is exact under certainty equivalence.
-      // To obtain a clean "all methods coincide" sanity check, we therefore set omega_var=0 so that
-      // PPPF degenerates to a single linear-Gaussian kernel (K=1) and the RBPF coincides with Kalman.
-      const RunResult rr =
-          run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, /*omega_var=*/0.0,
-                                /*omega_horizon=*/omega_horizon);
-      loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
-      rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
-      util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
+	    {
+	      // In a linear-Gaussian no-ELB model, expectation integration is exact under certainty equivalence.
+	      // To obtain a clean "all methods coincide" sanity check, we therefore set omega_var=0 so that
+	      // PPPF degenerates to a single linear-Gaussian kernel (K=1) and the RBPF coincides with Kalman.
+	      PppfOptions opt;
+	      opt.omega_var = 0.0;
+	      opt.omega_horizon = omega_horizon;
+	      opt.optimal_index_proposal = true;
+	      opt.anchor_mode = AnchorMode::Shared;
+	      opt.i_meas_mode = PppfIMeasMode::Censored;
+	      opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
+	      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, opt);
+	      loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
+	      rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
+	      util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
       if (rep == 0) {
         double ess_mean = 0.0;
         for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
@@ -794,10 +830,396 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
   std::cout << "Wrote " << ess_csv.string() << "\n";
 }
 
+struct NkBenchmarkData {
+  models::NkGlobalGrid grid;
+  std::vector<Eigen::VectorXd> y_obs;
+  Eigen::VectorXd alpha0;
+  double loglik_exact = 0.0;
+  int bind_count = 0;
+};
+
+double global_discrete_loglik_prefix(const models::NkGlobalGrid& grid, const Eigen::VectorXd& alpha0,
+                                     const std::vector<Eigen::VectorXd>& y_obs,
+                                     const Eigen::Matrix3d& Rm, int T_prefix) {
+  const int nr = static_cast<int>(grid.r_grid.size());
+  const int nn = static_cast<int>(grid.nu_grid.size());
+  const int S = nr * nn;
+  Eigen::VectorXd alpha = alpha0;
+  double ll = 0.0;
+  for (int t = 0; t < T_prefix; ++t) {
+    Eigen::VectorXd alpha_pred = grid.P.transpose() * alpha;
+
+    Eigen::VectorXd logg(S);
+    for (int i = 0; i < nr; ++i) {
+      for (int j = 0; j < nn; ++j) {
+        const int s = i * nn + j;
+        Eigen::Vector3d yhat;
+        yhat << grid.pi(i, j), grid.x(i, j), grid.i(i, j);
+        logg(s) = util::log_mvnorm_pdf(y_obs[t], yhat, Rm);
+      }
+    }
+    Eigen::VectorXd g = logg.array().exp().matrix();
+    Eigen::VectorXd alpha_unnorm = alpha_pred.array() * g.array();
+    const double z = alpha_unnorm.sum();
+    if (!(z > 0.0) || !std::isfinite(z)) throw std::runtime_error("global_exact: alpha sum");
+    ll += std::log(z);
+    alpha = alpha_unnorm / z;
+  }
+  return ll;
+}
+
+NkBenchmarkData make_nk_elb_benchmark_data(const models::NkParams& p, int T, const Eigen::Matrix3d& Rm,
+                                          std::uint64_t seed_data) {
+  // Solve global policy (discretized Markov chain).
+  models::NkGlobalGrid grid = models::make_default_global_grid(p);
+  models::NkGlobalSolveOptions gopt;
+  gopt.max_iter = 80;
+  gopt.tol = 1e-10;
+  gopt.fb_eps = 1e-12;
+  util::Timer tglob;
+  models::solve_nk_global_policy(p, &grid, gopt);
+  std::cout << "Solved global NK policy (Tauchen grid) in " << tglob.elapsed_ms() << " ms\n";
+
+  const int nr = static_cast<int>(grid.r_grid.size());
+  const int nn = static_cast<int>(grid.nu_grid.size());
+  const int S = nr * nn;
+
+  // Simulate data from the discrete benchmark.
+  util::Rng rng_data(seed_data);
+  std::vector<Eigen::VectorXd> y_obs(T);
+
+  Eigen::VectorXd d0 = models::initial_distribution_bilinear(grid, 0.0, 0.0);
+  std::vector<double> d0v(S);
+  for (int s = 0; s < S; ++s) d0v[s] = d0(s);
+  int s_prev = rng_data.categorical(d0v);
+
+  int bind_count = 0;
+  for (int t = 0; t < T; ++t) {
+    const int i = s_prev / nn;
+    const int j = s_prev % nn;
+    const double x = grid.x(i, j);
+    const double pi = grid.pi(i, j);
+    const double irate = grid.i(i, j);
+
+    Eigen::Vector3d y_t;
+    y_t << pi, x, irate;
+    Eigen::Vector3d y_noisy = y_t;
+    y_noisy += Eigen::Vector3d(std::sqrt(Rm(0, 0)) * rng_data.normal(),
+                               std::sqrt(Rm(1, 1)) * rng_data.normal(),
+                               std::sqrt(Rm(2, 2)) * rng_data.normal());
+    y_obs[t] = y_noisy;
+
+    if (std::abs(irate - p.i_lower) < 1e-12) ++bind_count;
+
+    std::vector<double> row(S);
+    for (int sp = 0; sp < S; ++sp) row[sp] = grid.P(s_prev, sp);
+    s_prev = rng_data.categorical(row);
+  }
+
+  const double ll_exact = global_discrete_loglik_prefix(grid, d0, y_obs, Rm, T);
+  std::cout << "Simulated NK dataset: T=" << T << ", ELB binds in " << bind_count << " periods\n";
+
+  NkBenchmarkData out;
+  out.grid = std::move(grid);
+  out.y_obs = std::move(y_obs);
+  out.alpha0 = std::move(d0);
+  out.loglik_exact = ll_exact;
+  out.bind_count = bind_count;
+  return out;
+}
+
+struct AblationRow {
+  std::string name;
+  int horizon = 0;
+  int omega_horizon = 0;
+  int K = 0;
+  AnchorMode anchor_mode = AnchorMode::Shared;
+  models::PppfRegimeMode regime_mode = models::PppfRegimeMode::EndogenousByNode;
+  PppfIMeasMode i_meas_mode = PppfIMeasMode::Censored;
+  bool optimal_index_proposal = true;
+  int T = 0;
+  int N = 0;
+  int R = 0;
+  double mean_gap = 0.0;
+  double sd_loglik = 0.0;
+  double mean_ess = 0.0;
+  double mean_runtime_ms = 0.0;
+};
+
+std::string to_string(AnchorMode m) { return (m == AnchorMode::Shared) ? "shared" : "per_particle"; }
+std::string to_string(PppfIMeasMode m) { return (m == PppfIMeasMode::Censored) ? "censored" : "linear"; }
+std::string to_string(models::PppfRegimeMode m) {
+  switch (m) {
+    case models::PppfRegimeMode::EndogenousByNode:
+      return "endogenous";
+    case models::PppfRegimeMode::FixedBind0FromMean:
+      return "fixed_bind0";
+    case models::PppfRegimeMode::MixtureBind0:
+      return "mixture_bind0";
+  }
+  return "unknown";
+}
+
+int implied_K(int omega_horizon, int horizon, double omega_var, models::PppfRegimeMode regime_mode) {
+  const int L = std::min(omega_horizon, horizon);
+  const int d = 2 * L;
+  const int Kut = (d == 0 || omega_var == 0.0) ? 1 : (2 * d + 1);
+  if (regime_mode == models::PppfRegimeMode::MixtureBind0 && Kut > 1) return 2 * Kut;
+  return Kut;
+}
+
+void write_nk_ablation_csv(const std::filesystem::path& path, const std::vector<AblationRow>& rows) {
+  std::ofstream out(path);
+  if (!out) throw std::runtime_error("failed to open: " + path.string());
+  util::write_csv_header(out, {"case", "T", "N", "R", "horizon", "omega_horizon", "K", "anchor", "regime",
+                               "i_meas", "optimal_index_proposal", "mean_gap_vs_exact", "sd_loglik",
+                               "mean_ess", "mean_runtime_ms"});
+  for (const auto& r : rows) {
+    util::write_csv_row(out, r.name, r.T, r.N, r.R, r.horizon, r.omega_horizon, r.K, to_string(r.anchor_mode),
+                        to_string(r.regime_mode), to_string(r.i_meas_mode), r.optimal_index_proposal ? 1 : 0,
+                        r.mean_gap, r.sd_loglik, r.mean_ess, r.mean_runtime_ms);
+  }
+}
+
+void write_nk_ablation_table_tex(const std::filesystem::path& path, const std::vector<AblationRow>& rows) {
+  std::ostringstream oss;
+  const int T0 = rows.empty() ? 0 : rows.front().T;
+  const int N0 = rows.empty() ? 0 : rows.front().N;
+  const int R0 = rows.empty() ? 0 : rows.front().R;
+  oss << "\\begin{tabular}{lrrrrrr}\n";
+  oss << "\\toprule\n";
+  oss << "Case & $H$ & $\\omega$ horizon & $K$ & Gap & SD & Mean ESS \\\\\n";
+  oss << "\\midrule\n";
+  oss.setf(std::ios::fixed);
+  for (const auto& r : rows) {
+    std::string name = r.name;
+    if (r.T != T0 || r.N != N0 || r.R != R0) name += "$^{\\dagger}$";
+    oss << name << " & " << r.horizon << " & " << r.omega_horizon << " & " << r.K << " & "
+        << std::setprecision(1) << r.mean_gap << " & " << std::setprecision(1) << r.sd_loglik << " & "
+        << std::setprecision(1) << r.mean_ess << " \\\\\n";
+  }
+  oss << "\\bottomrule\n";
+  oss << "\\end{tabular}\n";
+  util::write_text_file(path, oss.str());
+}
+
+void run_nk_elb_ablations(const models::NkParams& p_base, int T, int N, int R, const Eigen::Matrix3d& Rm,
+                          std::uint64_t seed_data, const std::filesystem::path& out_dir,
+                          const std::filesystem::path& paper_table_path) {
+  util::ensure_dir(out_dir);
+
+  const NkBenchmarkData bench = make_nk_elb_benchmark_data(p_base, T, Rm, seed_data);
+  std::map<int, double> ll_exact_cache;
+  ll_exact_cache[T] = bench.loglik_exact;
+
+  const Eigen::Vector4d mean0 = Eigen::Vector4d::Zero();
+  Eigen::Matrix4d cov0 = Eigen::Matrix4d::Zero();
+  cov0(0, 0) = 0.02 * 0.02;
+  cov0(1, 1) = 0.02 * 0.02;
+  cov0(2, 2) = 0.05 * 0.05;
+  cov0(3, 3) = 0.05 * 0.05;
+
+  struct CaseSpec {
+    std::string name;
+    int horizon;
+    PppfOptions opt;
+    int T_override = -1;
+    int N_override = -1;
+    int R_override = -1;
+  };
+
+  std::vector<CaseSpec> cases;
+  CaseSpec base;
+  base.name = "Baseline";
+  base.horizon = 20;
+  base.opt.omega_horizon = 1;
+  base.opt.omega_var = 1.0;
+  base.opt.anchor_mode = AnchorMode::Shared;
+  base.opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
+  base.opt.i_meas_mode = PppfIMeasMode::Censored;
+  base.opt.optimal_index_proposal = true;
+  cases.push_back(base);
+
+  {
+    CaseSpec c = base;
+    c.name = "CE ($K{=}1$)";
+    c.opt.omega_var = 0.0;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "$\\omega$ horizon 2";
+    c.opt.omega_horizon = 2;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "$\\omega$ horizon 3";
+    c.opt.omega_horizon = 3;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "$H{=}10$";
+    c.horizon = 10;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "$H{=}40$";
+    c.horizon = 40;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "Fixed bind0";
+    c.opt.regime_mode = models::PppfRegimeMode::FixedBind0FromMean;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "Bind0 mixture";
+    c.opt.regime_mode = models::PppfRegimeMode::MixtureBind0;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "Linear $i$";
+    c.opt.i_meas_mode = PppfIMeasMode::Linear;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "No aux proposal";
+    c.opt.optimal_index_proposal = false;
+    cases.push_back(c);
+  }
+  {
+    CaseSpec c = base;
+    c.name = "Per-particle anchor";
+    c.opt.anchor_mode = AnchorMode::PerParticle;
+    c.T_override = 50;
+    c.N_override = 4;
+    c.R_override = 2;
+    cases.push_back(c);
+  }
+
+  std::vector<AblationRow> rows;
+  rows.reserve(cases.size());
+
+  for (const auto& cs : cases) {
+    models::NkParams p = p_base;
+    p.horizon = cs.horizon;
+
+    const int Tc = (cs.T_override > 0) ? cs.T_override : T;
+    const int Nc = (cs.N_override > 0) ? cs.N_override : N;
+    const int Rc = (cs.R_override > 0) ? cs.R_override : R;
+
+    if (ll_exact_cache.find(Tc) == ll_exact_cache.end()) {
+      ll_exact_cache[Tc] = global_discrete_loglik_prefix(bench.grid, bench.alpha0, bench.y_obs, Rm, Tc);
+    }
+    const double ll_exact = ll_exact_cache.at(Tc);
+    std::vector<Eigen::VectorXd> y_prefix(bench.y_obs.begin(), bench.y_obs.begin() + Tc);
+
+    std::vector<double> ll;
+    std::vector<double> rt;
+    ll.reserve(Rc);
+    rt.reserve(Rc);
+    double mean_ess = 0.0;
+
+    for (int rep = 0; rep < Rc; ++rep) {
+      const std::uint64_t seed_base = 930000ULL + static_cast<std::uint64_t>(rep) * 1000ULL;
+      const RunResult rr = run_pppf_mixture_rbpf(p, Nc, mean0, cov0, y_prefix, Rm, seed_base + 17, cs.opt);
+      ll.push_back(rr.loglik);
+      rt.push_back(rr.runtime_ms);
+      if (rep == 0) {
+        for (double e : rr.ess) mean_ess += e;
+        mean_ess /= static_cast<double>(rr.ess.size());
+      }
+    }
+
+    AblationRow row;
+    row.name = cs.name;
+    row.horizon = cs.horizon;
+    row.omega_horizon = cs.opt.omega_horizon;
+    row.anchor_mode = cs.opt.anchor_mode;
+    row.regime_mode = cs.opt.regime_mode;
+    row.i_meas_mode = cs.opt.i_meas_mode;
+    row.optimal_index_proposal = cs.opt.optimal_index_proposal;
+    row.T = Tc;
+    row.N = Nc;
+    row.R = Rc;
+    row.K = implied_K(cs.opt.omega_horizon, cs.horizon, cs.opt.omega_var, cs.opt.regime_mode);
+    row.mean_gap = util::mean(ll) - ll_exact;
+    row.sd_loglik = util::stdev(ll);
+    row.mean_ess = mean_ess;
+    row.mean_runtime_ms = util::mean(rt);
+    rows.push_back(row);
+
+    std::cout << "Ablation " << cs.name << ": gap=" << row.mean_gap << ", sd=" << row.sd_loglik
+              << ", ess=" << row.mean_ess << ", time(ms)=" << row.mean_runtime_ms << std::endl;
+  }
+
+  write_nk_ablation_csv(out_dir / "nk_ablation.csv", rows);
+  if (!paper_table_path.empty()) write_nk_ablation_table_tex(paper_table_path, rows);
+}
+
 }  // namespace
 
-int main() {
+struct CliOptions {
+  std::string mode = "baseline";
+  int T = 250;
+  int N = 256;
+  int R = 30;
+  int horizon = 20;
+  int omega_horizon = 1;
+  std::filesystem::path out_dir = "output/nk";
+  std::filesystem::path out_dir_abl = "output/nk_ablation";
+  std::filesystem::path paper_table = {};
+};
+
+CliOptions parse_args(int argc, char** argv) {
+  CliOptions opt;
+  for (int i = 1; i < argc; ++i) {
+    const std::string a(argv[i]);
+    auto need = [&](const std::string& flag) {
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for " + flag);
+      return std::string(argv[++i]);
+    };
+    if (a == "--mode") {
+      opt.mode = need(a);
+    } else if (a == "--T") {
+      opt.T = std::stoi(need(a));
+    } else if (a == "--N") {
+      opt.N = std::stoi(need(a));
+    } else if (a == "--R") {
+      opt.R = std::stoi(need(a));
+    } else if (a == "--horizon") {
+      opt.horizon = std::stoi(need(a));
+    } else if (a == "--omega_horizon") {
+      opt.omega_horizon = std::stoi(need(a));
+    } else if (a == "--out_dir") {
+      opt.out_dir = need(a);
+    } else if (a == "--out_dir_abl") {
+      opt.out_dir_abl = need(a);
+    } else if (a == "--paper_table") {
+      opt.paper_table = need(a);
+    } else if (a == "--help" || a == "-h") {
+      std::cout << "Usage: nk_compare [--mode baseline|ablations] [--T int] [--N int] [--R int]\\n";
+      std::cout << "                 [--horizon int] [--omega_horizon int] [--out_dir path]\\n";
+      std::cout << "                 [--out_dir_abl path] [--paper_table path]\\n";
+      std::exit(0);
+    } else {
+      throw std::invalid_argument("unknown flag: " + a);
+    }
+  }
+  return opt;
+}
+
+int main(int argc, char** argv) {
   try {
+    const CliOptions cli = parse_args(argc, argv);
+
     models::NkParams p;
     p.beta = 0.99;
     p.sigma = 1.0;
@@ -811,11 +1233,7 @@ int main() {
     p.sigma_r = 0.01;
     p.rho_nu = 0.8;
     p.sigma_nu = 0.005;
-    p.horizon = 20;
-
-    const int T = 250;
-    const int N = 256;
-    const int R = 30;
+    p.horizon = cli.horizon;
 
     const double meas_sd_pi = 0.005;
     const double meas_sd_x = 0.005;
@@ -826,18 +1244,25 @@ int main() {
     Rm(1, 1) = meas_sd_x * meas_sd_x;
     Rm(2, 2) = meas_sd_i * meas_sd_i;
 
-    std::cout << "\n=== NK-ELB benchmark (ELB may bind) ===\n";
-    NkExperimentConfig cfg1;
-    cfg1.p = p;
-    cfg1.out_dir = "output/nk";
-    cfg1.seed_data = 20260113ULL;
-    cfg1.shock_eps_r_irf = -2.0;
-    run_nk_experiment(cfg1, T, N, R, Rm);
+    if (cli.mode == "baseline") {
+      std::cout << "\n=== NK-ELB benchmark (ELB may bind) ===\n";
+      NkExperimentConfig cfg1;
+      cfg1.p = p;
+      cfg1.out_dir = cli.out_dir;
+      cfg1.seed_data = 20260113ULL;
+      cfg1.shock_eps_r_irf = -2.0;
+      cfg1.omega_horizon = cli.omega_horizon;
+      run_nk_experiment(cfg1, cli.T, cli.N, cli.R, Rm);
 
-    std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
-    // Use larger N and fewer repeats to keep the sanity check tight without being too slow.
-    run_nk_no_elb_continuous_sanity(p, "output/nk_sanity_no_elb", T, 2048, 10, Rm, 20260218ULL,
-                                    /*omega_horizon=*/cfg1.omega_horizon);
+      std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
+      run_nk_no_elb_continuous_sanity(p, "output/nk_sanity_no_elb", cli.T, 2048, 10, Rm, 20260218ULL,
+                                      /*omega_horizon=*/cfg1.omega_horizon);
+    } else if (cli.mode == "ablations") {
+      std::cout << "\n=== NK-ELB ablation suite ===\n";
+      run_nk_elb_ablations(p, cli.T, cli.N, cli.R, Rm, 20260113ULL, cli.out_dir_abl, cli.paper_table);
+    } else {
+      throw std::invalid_argument("unknown mode: " + cli.mode);
+    }
 
     return 0;
   } catch (const std::exception& e) {

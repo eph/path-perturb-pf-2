@@ -711,6 +711,19 @@ PLC-IPF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
 \label{tab:nk_summary}
 \end{table}
 
+To diagnose which approximation components drive PPPF bias in this calibration, Table~\ref{tab:nk_ablations} reports a one-factor-at-a-time ablation suite holding fixed the simulated dataset and (except where noted) the particle count and number of repeated filter runs.
+The reported gap is the PPPF log-likelihood minus the exact benchmark likelihood for the discretized model, so it isolates differences in the approximate transition kernel rather than Monte Carlo variability of the particle filter.
+The ablations illustrate that the ELB regime treatment matters sharply: fixing the time-$t{+}1$ binding decision across quadrature nodes produces substantial additional bias, while a two-regime mixture that averages bind/slack transitions using a Gaussian approximation to the binding probability partially restores likelihood accuracy at modest additional cost.
+
+\begin{table}[t]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\input{tab_nk_ablations.tex}
+\caption{NK--ELB PPPF ablations: mean log-likelihood gap to the exact discretized benchmark, standard deviation across repeated filter runs, and mean ESS. All rows use $T=250$, $N=256$, and $N_{\mathrm{rep}}=30$ unless marked with $\dagger$, which indicates a reduced configuration ($T=50$, $N=4$, $N_{\mathrm{rep}}=2$) used only to illustrate the effect of per-particle anchoring.}
+\label{tab:nk_ablations}
+\end{table}
+
 Figure~\ref{fig:nk_irf} reports impulse responses near the ELB kink, comparing OccBin and PPPF to a discretized global stochastic benchmark (expectation-consistent equilibrium on a Tauchen grid).
 Under this calibration, OccBin tracks the global benchmark more closely than PPPF in IRF RMSE, while PPPF exhibits substantially higher ESS (hence lower Monte Carlo variability) in likelihood evaluation.
 The lower PPPF likelihood relative to OccBin in Table~\ref{tab:nk_summary} reflects approximation bias rather than particle-filter variance: PPPF is evaluating a different approximate kernel, and in this specification the anticipated-shock proxy and local linearization are not yet rich enough to match the discretized global benchmark.

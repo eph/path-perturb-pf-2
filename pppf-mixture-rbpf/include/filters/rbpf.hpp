@@ -43,7 +43,8 @@ inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::Ma
                                 int, const Eigen::VectorXd&)>&
                                 mixture_builder,
                             const ObsUpdate& obs_update, util::Rng& rng, double ess_frac = 0.5,
-                            bool optimal_index_proposal = false) {
+                            bool optimal_index_proposal = false,
+                            bool per_particle_anchor = false) {
   if (N <= 0) throw std::invalid_argument("rbpf: N<=0");
   const int T = static_cast<int>(y.size());
 
@@ -59,21 +60,29 @@ inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::Ma
   diag.ess.reserve(T);
 
   for (int t = 0; t < T; ++t) {
-    // Reference for localization: weighted mean of filtered means at t-1 (or initial at t=0).
     const Eigen::VectorXd w_norm = logw.array().exp().matrix();
-    Eigen::VectorXd ref = Eigen::VectorXd::Zero(mean0.size());
-    for (int i = 0; i < N; ++i) ref += w_norm(i) * particles[i].kf.mean;
+    Eigen::VectorXd ref_shared = Eigen::VectorXd::Zero(mean0.size());
+    for (int i = 0; i < N; ++i) ref_shared += w_norm(i) * particles[i].kf.mean;
 
-    const statespace::GaussianMixtureTransition mix = mixture_builder(t, ref);
-    mix.check();
+    statespace::GaussianMixtureTransition mix_shared;
+    if (!per_particle_anchor) {
+      mix_shared = mixture_builder(t, ref_shared);
+      mix_shared.check();
+    }
 
     // Predict + update under sampled k per particle.
     Eigen::VectorXd logw_new(N);
     for (int i = 0; i < N; ++i) {
+      const statespace::GaussianMixtureTransition* mix = &mix_shared;
+      if (per_particle_anchor) {
+        mix_shared = mixture_builder(t, particles[i].kf.mean);
+        mix_shared.check();
+      }
+
       if (!optimal_index_proposal) {
-        const int k = rng.categorical(mix.weights);
+        const int k = rng.categorical(mix->weights);
         particles[i].k = k;
-        const auto& tr = mix.components[k];
+        const auto& tr = mix->components[k];
 
         statespace::KalmanState pred = particles[i].kf;
         statespace::kalman_predict(tr.A, tr.a, tr.Q, &pred);
@@ -85,16 +94,16 @@ inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::Ma
         continue;
       }
 
-      const int K = mix.size();
+      const int K = mix->size();
       std::vector<statespace::KalmanState> preds(K);
       Eigen::VectorXd logwk(K);
 
       for (int k = 0; k < K; ++k) {
         preds[k] = particles[i].kf;
-        const auto& tr = mix.components[k];
+        const auto& tr = mix->components[k];
         statespace::kalman_predict(tr.A, tr.a, tr.Q, &preds[k]);
         const double ll = obs_update(t, y[t], k, &preds[k]);
-        logwk(k) = std::log(mix.weights[k]) + ll;
+        logwk(k) = std::log(mix->weights[k]) + ll;
       }
 
       const double log_norm = util::log_sum_exp(logwk);
