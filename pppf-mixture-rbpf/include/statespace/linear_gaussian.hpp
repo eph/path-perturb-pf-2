@@ -141,6 +141,19 @@ inline double kalman_update_censored_lower(const Eigen::RowVectorXd& h, double i
 
   const double s = std::sqrt(std::max(0.0, s2));
   const double alpha = (c - m) / s;
+
+  // If the lower bound is far in the left tail of the prior for u = h x,
+  // censoring is essentially impossible and the measurement is effectively linear:
+  //   y' = u + eps,  eps ~ N(0, meas_var).
+  // Use the standard scalar Kalman update for numerical stability.
+  if (alpha < -10.0) {
+    const double var_y = s2 + meas_var;
+    const double v = yprime - m;
+    st->mean = st->mean + (Ph / var_y) * v;
+    st->cov = st->cov - (Ph * Ph.transpose()) / var_y;
+    return log_normal_pdf(yprime, m, var_y);
+  }
+
   const double log_w0 = log_normal_pdf(yprime, c, meas_var) + log_normal_cdf(alpha);
 
   const double var_y = s2 + meas_var;

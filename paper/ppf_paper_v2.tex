@@ -598,6 +598,25 @@ As an additional sanity check in a setting where all methods should agree, we va
 In that case, an RBPF with a single mixture component ($K=1$) coincides with the Kalman filter and matches the exact log-likelihood to machine precision.
 A bootstrap particle filter, which replaces analytic Gaussian integration with Monte Carlo integration, approaches the same likelihood as the particle count increases.
 
+As a sanity check that also exercises the NK code path (rather than a generic toy model), we rerun the NK model with the ELB effectively removed (setting $\underline i$ far below any realized policy rate so the constraint never binds) and simulate data from the resulting linear-Gaussian state-space system driven by continuous AR(1) shocks.
+In this case an exact likelihood is available by Kalman filtering on the exogenous state $(r_t^n,\nu_t)$ under the implied linear policy mapping; our implementation constructs this ``exact'' baseline to match the same finite-horizon OccBin mapping used by the filters.
+Table~\ref{tab:nk_no_elb_sanity} reports that PPPF (degenerating to a single component by setting $\Var(\omega)=0$) matches the Kalman likelihood to numerical precision, while OccBin + bootstrap PF converges to the same likelihood up to Monte Carlo error.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Method & Mean loglik & SD loglik & Mean runtime (ms) & SD runtime (ms) & Mean ESS \\
+\midrule
+Kalman (exact; no ELB) & 2345.0 & 0.0 & 0.0 & 0.0 & -- \\
+OccBin + bootstrap PF (no ELB) & 2342.8 & 1.8 & 745.0 & 10.0 & 196.3 \\
+PPPF-RBPF (no ELB; $K=1$) & 2345.0 & 0.0 & 1226.6 & 8.9 & 2048.0 \\
+\bottomrule
+\end{tabular}
+\caption{NK no-ELB sanity check (reference implementation): with the constraint inactive, the model is linear-Gaussian and PPPF with $\Var(\omega)=0$ (single component) coincides with the exact Kalman likelihood; the OccBin bootstrap particle filter approaches the same likelihood as $N$ grows. Reported statistics are across $R=10$ repeated filter runs on fixed data, with $T=250$ and $N=2048$ particles.}
+\label{tab:nk_no_elb_sanity}
+\end{table}
+
 We then turn to the NK--ELB benchmark.
 Table~\ref{tab:nk_summary} reports summary statistics from the reference implementation.
 We simulate data from the discretized global benchmark and compute its exact likelihood by the HMM forward algorithm described above.
