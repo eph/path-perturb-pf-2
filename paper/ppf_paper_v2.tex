@@ -149,10 +149,10 @@ PPPF uses such quadrature not as a single-Gaussian moment-matching device, but t
 Let $(x_t)_{t\ge 0}$ be an $\R^{n_x}$-valued latent state and $(y_t)_{t\ge 1}$ observed data.
 We assume a linear measurement equation with Gaussian noise:
 \begin{equation}
-y_t = H x_t + \eta_t,\qquad \eta_t\sim \mathcal{N}(0,R),
+y_t = M x_t + \eta_t,\qquad \eta_t\sim \mathcal{N}(0,R),
 \label{eq:meas}
 \end{equation}
-where $H$ and $R$ may depend on parameters $\theta$.
+where $M$ and $R$ may depend on parameters $\theta$.
 
 \subsection{Equilibrium transition and Gaussian shocks}
 The state transition is induced by DSGE equilibrium conditions and structural innovations.
@@ -174,31 +174,41 @@ This section derives the object the filter will use: a Gaussian approximation to
 Fix a horizon $H\ge 2$.
 Let
 \[
-\omega_t = (\varepsilon_{t+1}^a,\varepsilon_{t+2}^a,\ldots,\varepsilon_{t+H-1}^a)\in \R^{d},
-\qquad d=(H-1)n_\varepsilon,
+\omega_t = (\varepsilon_{t+2}^a,\varepsilon_{t+3}^a,\ldots,\varepsilon_{t+H-1}^a)\in \R^{d},
+\qquad d=\max\{0,H-2\}n_\varepsilon,
 \]
-collect a sequence of \emph{anticipated} shocks over the horizon.
-We treat $\omega_t$ as an auxiliary variable drawn from the Gaussian law induced by the shock process:
+collect a sequence of \emph{anticipated} shocks \emph{beyond the one-step innovation} over the horizon (so for $H=2$, $\omega_t$ is empty).
+We treat $\omega_t$ as an auxiliary integration variable with the Gaussian law induced by the shock process:
 \[
-\omega_t \sim \mathcal{N}(0,\Omega),\qquad \Omega=\mathrm{diag}(\Sigma,\ldots,\Sigma).
+\omega_t \sim \mathcal{N}(0,\Omega),\qquad \Omega=\mathrm{diag}(\Sigma,\ldots,\Sigma),
 \]
-Conceptually, $\omega_t$ is a numerical device used to approximate conditional expectations, not an additional structural shock.
+where the block diagonal has $H-2$ copies of $\Sigma$ (and is vacuous when $H=2$).
+Conceptually, $\omega_t$ is a numerical device used to approximate conditional expectations, not an additional structural shock, and it is \emph{distinct} from the realized one-step innovation $\varepsilon_{t+1}$ that moves the state from $t$ to $t+1$.
+
+\paragraph{Randomness vs.\ quadrature/integration nodes (explicit).}
+Throughout, structural innovations $\varepsilon_{t+1}\sim\mathcal{N}(0,\Sigma)$ are random.
+By contrast, $\omega$ is an integration variable with respect to the Gaussian measure $\mathcal{N}(0,\Omega)$ that we later approximate numerically by quadrature; it should not be interpreted as an additional shock realization on top of $\varepsilon_{t+1}$.
+Operationally, the stacked EP/SEP-style system is solved at a baseline $\varepsilon_{t+1}=0$, while $\omega_t$ perturbs the future-expectations terms over $t+2,\ldots,t+H-1$.
 
 Let $X_{t:t+H-1}=(x_t,x_{t+1},\ldots,x_{t+H-1})$ and define a stacked residual mapping
 \[
-\mathcal{R}(X_{t:t+H-1};x_t,\omega_t,\theta)=0
+\mathcal{R}(X_{t:t+H-1};x_t^{\mathrm{ref}},\omega_t,\theta)=0
 \]
 encoding equilibrium conditions from $t$ through $t+H-2$ plus a terminal condition at $t+H-1$ (e.g.\ $x_{t+H-1}\approx x^\star$).
 In practice this is the system solved in EP/SEP and in perfect-foresight solvers \citep{FairTaylor1983,AdjemianJuillard2025}.
 We denote by
 \[
-\bar X_{t:t+H-1}=\bar X(x_t,\omega_t;\theta)
+\bar X_{t:t+H-1}=\bar X(x_t^{\mathrm{ref}},\omega_t;\theta)
 \]
 a solution of the stacked system.
 
 \subsection{Local perturbations around the path}
 
-Define deviations $\tilde x_s = x_s-\bar x_s$ for $s=t,\ldots,t+H-1$.
+In general the EP/SEP system may be solved (i) \emph{per particle} at $x_t$ or (ii) at a \emph{reference/anchor state} $x_t^{\mathrm{ref}}$ (e.g.\ a weighted mean of particles) to avoid solving per particle.
+To keep the derivation aligned with implementable filters, we distinguish these cases explicitly.
+
+Fix an anchor $x_t^{\mathrm{ref}}$ and let $\bar X_{t:t+H-1}=\bar X(x_t^{\mathrm{ref}},\omega_t;\theta)$ denote the stacked solution path.
+Define deviations $\tilde x_s = x_s-\bar x_s$ for $s=t,\ldots,t+H-1$, so in particular $\tilde x_t=x_t-x_t^{\mathrm{ref}}$ because the initial condition in the stacked system is pinned at $x_t^{\mathrm{ref}}$.
 Linearizing $\mathcal{R}$ at $\bar X$ yields a sparse block system linking $\tilde x_{t:t+H-1}$ to \emph{unexpected} innovations.
 To keep the derivation transparent, we focus on the one-step mapping from $(x_t,\varepsilon_{t+1})$ to $x_{t+1}$.
 Let $\varepsilon_{t+1}$ be the \emph{unexpected} shock realization at $t+1$ (mean zero).
@@ -206,26 +216,29 @@ Then the linearized system implies
 \begin{equation}
 \tilde x_{t+1}
 =
-A_t(x_t,\omega_t)\,\tilde x_t
+A_t(x_t^{\mathrm{ref}},\omega_t)\,\tilde x_t
 +
-B_t(x_t,\omega_t)\,\varepsilon_{t+1},
+B_t(x_t^{\mathrm{ref}},\omega_t)\,\varepsilon_{t+1},
 \label{eq:lin_dev}
 \end{equation}
 where $A_t,B_t$ are obtained from the Jacobian of the stacked system (details in Appendix~\ref{app:ift}).
 
 Equation \eqref{eq:lin_dev} yields a \emph{conditional} linear-Gaussian transition:
 \begin{equation}
-x_{t+1}\mid (x_t,\omega_t)
+x_{t+1}\mid (x_t,\omega_t,x_t^{\mathrm{ref}})
 \;\approx\;
 \mathcal{N}\!\left(m(x_t,\omega_t),\,Q(x_t,\omega_t)\right),
 \label{eq:cond_gauss}
 \end{equation}
 with
 \[
-m(x_t,\omega_t)=\bar x_{t+1}+A_t(x_t,\omega_t)\,(x_t-\bar x_t),
+m(x_t,\omega_t)=\bar x_{t+1}(x_t^{\mathrm{ref}},\omega_t)+A_t(x_t^{\mathrm{ref}},\omega_t)\,(x_t-x_t^{\mathrm{ref}}),
 \qquad
-Q(x_t,\omega_t)=B_t(x_t,\omega_t)\,\Sigma\,B_t(x_t,\omega_t)^\top.
+Q(x_t,\omega_t)=B_t(x_t^{\mathrm{ref}},\omega_t)\,\Sigma\,B_t(x_t^{\mathrm{ref}},\omega_t)^\top.
 \]
+\paragraph{Per-particle versus reference-state solves (explicit).}
+If one solves the stacked system per particle, set $x_t^{\mathrm{ref}}=x_t$ and the mean reduces to $m(x_t,\omega_t)=\bar x_{t+1}(x_t,\omega_t)$.
+If instead one uses a shared anchor $x_t^{\mathrm{ref}}$ (to amortize EP solves across particles or to propagate a Kalman belief with mean $\mu_t$), the affine correction term $A_t(x_t^{\mathrm{ref}},\omega_t)(x_t-x_t^{\mathrm{ref}})$ is the approximation that transfers the pathwise linearization away from the anchor.
 
 \begin{remark}[Relation to dynamic perturbation and SEP]
 Dynamic perturbation \citep{MennuniRubioRamirezStepanchuk2025} also computes first-order expansions along equilibrium paths.
@@ -247,6 +260,8 @@ Integrating out $\omega_t$ yields an approximate transition kernel
 \label{eq:mixture_kernel}
 \end{equation}
 This is a Gaussian mixture (Gaussian-sum) transition \citep{AlspachSorenson1972}.
+In the per-particle version one sets $x_t^{\mathrm{ref}}=x_t$, so \eqref{eq:mixture_kernel} defines an approximate Markov kernel in $x_t$ alone.
+In the reference-state shortcut, one holds $x_t^{\mathrm{ref}}$ fixed within the time-$t$ update (e.g.\ the weighted mean of particles) and interprets \eqref{eq:cond_gauss}--\eqref{eq:mixture_kernel} as a controlled local approximation around that anchor.
 In practice we replace the integral by a $K$-node rule (sigma points, Gauss--Hermite, sparse grids, quasi-Monte Carlo, or Monte Carlo):
 \begin{equation}
 \widehat K_{\theta,K}(x_t,\dd x_{t+1})
@@ -305,10 +320,15 @@ Under the smoothness assumption, there exists $C<\infty$ such that
 \[
 \sup_{x\in\mathcal{X}} \|m(x,\omega)-\widehat m_J(x,\omega)\|\le C \Delta_J^2,
 \qquad
-\sup_{x\in\mathcal{X}} \|Q(x,\omega)-\widehat Q_J(x,\omega)\|\le C \Delta_J^2,
+\sup_{x\in\mathcal{X}} \|B(x,\omega)-\widehat B_J(x,\omega)\|\le C \Delta_J^2,
 \]
-for each fixed $\omega$, provided $\widehat m_J,\widehat Q_J$ are constructed by first-order Taylor (or equivalent local linear) approximations on each cell.
-Hence if $\Delta_J\to 0$ as $J\to\infty$, then the approximation error vanishes uniformly.
+for each fixed $\omega$, provided $\widehat m_J,\widehat B_J$ are constructed by first-order Taylor (or equivalent local linear) approximations on each cell.
+Define $\widehat Q_J(x,\omega)=\widehat B_J(x,\omega)\,\Sigma\,\widehat B_J(x,\omega)^\top$, which is positive semidefinite by construction.
+Then there exists $C_Q<\infty$ such that
+\[
+\sup_{x\in\mathcal{X}} \|Q(x,\omega)-\widehat Q_J(x,\omega)\|\le C_Q \Delta_J^2.
+\]
+Hence if $\Delta_J\to 0$ as $J\to\infty$, then the approximation errors vanish uniformly while preserving the covariance-matrix constraints needed by the Kalman recursion.
 \end{proposition}
 
 \begin{remark}
@@ -372,6 +392,13 @@ In practice this can be done using a reference state (e.g.\ a weighted mean of p
 
 The key advantage of RBPF is that the Kalman step analytically integrates out the continuous state conditional on the discrete history, often providing substantial variance reduction.
 More sophisticated proposals (auxiliary particle filters) can improve ESS further by conditioning $q_t$ on $y_t$ \citep{PittShephard1999}.
+\paragraph{Recommended auxiliary proposal for mixture indices.}
+In the sampling (non-branching) RBPF variant, a high-leverage default is
+\[
+q_t(j)\propto w_t^{(j)}\,p(y_t\mid y_{1:t-1},j),
+\]
+where $j=(s,k)$ and the predictive likelihood $p(y_t\mid y_{1:t-1},j)$ is available from the Kalman predict step under component $j$.
+This targets mixture components that both have nontrivial prior weight and are consistent with the current observation, often improving ESS at negligible additional cost.
 
 \subsection{Algorithmic detail: mixture handling and quadrature choices}
 
@@ -449,6 +476,12 @@ K_\theta(x,A)\ge \epsilon \nu(A),
 and the measurement density satisfies $0< g_{\min}\le g_\theta(y\mid x)\le g_{\max}<\infty$ for all $x\in\mathcal{X}$ and realized $y_t$.
 \end{assumption}
 
+\begin{remark}[Strength of the global minorization condition]
+Assumption~3 is a standard sufficient condition used in stability theory, but it is often unrealistically strong for continuous-state DSGEs with near-deterministic transitions and informative measurements (where global minorization can fail).
+We include it only to make precise the qualitative message that \emph{one-step transition-kernel errors propagate into filtering and likelihood errors under forgetting}.
+In applied DSGE filtering one typically relies on local stability, bounded-moment conditions, and diagnostic checks rather than global minorization.
+\end{remark}
+
 \begin{theorem}[Filter perturbation bound (standard form)]
 Under the mixing and bounded-likelihood assumption, there exist constants $C<\infty$ and $\rho\in(0,1)$ such that the filtering distributions satisfy
 \[
@@ -498,12 +531,12 @@ This section specifies a concrete benchmark that directly connects to the OccBin
 \subsection{Core equilibrium conditions}
 
 We consider a canonical three-equation New Keynesian model with an effective lower bound (ELB) on the nominal rate.
-Let $x_t$ denote the output gap, $\pi_t$ inflation, and $i_t$ the nominal interest rate (deviations from steady state, appropriately scaled).
+Let $\tilde y_t$ denote the output gap, $\pi_t$ inflation, and $i_t$ the nominal interest rate (deviations from steady state, appropriately scaled).
 A standard log-linearized NK system is
 \begin{align}
-x_t &= \E_t x_{t+1} - \sigma^{-1}\Big(i_t - \E_t \pi_{t+1} - r_t^n\Big), \label{eq:nk_is}\\
-\pi_t &= \beta \E_t \pi_{t+1} + \kappa x_t, \label{eq:nk_pc}\\
-i_t^\star &= \phi_\pi \pi_t + \phi_x x_t + \nu_t, \label{eq:taylor}\\
+\tilde y_t &= \E_t \tilde y_{t+1} - \sigma^{-1}\Big(i_t - \E_t \pi_{t+1} - r_t^n\Big), \label{eq:nk_is}\\
+\pi_t &= \beta \E_t \pi_{t+1} + \kappa \tilde y_t, \label{eq:nk_pc}\\
+i_t^\star &= \phi_\pi \pi_t + \phi_{\tilde y}\tilde y_t + \nu_t, \label{eq:taylor}\\
 i_t &= \max\{ \underline i,\; i_t^\star\}. \label{eq:elb}
 \end{align}
 Here $r_t^n$ is a natural-rate (or preference) shock and $\nu_t$ a monetary policy shock; both follow AR(1) laws with Gaussian innovations.
@@ -515,13 +548,13 @@ The occasionally binding ELB constraint \eqref{eq:elb} introduces a kink and mak
 
 A minimal latent state can be
 \[
-x_t^{\mathrm{state}} = (x_t,\pi_t,i_t,r_t^n,\nu_t)^\top,
+x_t^{\mathrm{state}} = (\tilde y_t,\pi_t,i_t,r_t^n,\nu_t)^\top,
 \]
 with observables
 \[
-y_t = (x_t^{\mathrm{obs}},\pi_t^{\mathrm{obs}},i_t^{\mathrm{obs}})^\top,
+y_t = (\tilde y_t^{\mathrm{obs}},\pi_t^{\mathrm{obs}},i_t^{\mathrm{obs}})^\top,
 \qquad
-y_t = H x_t^{\mathrm{state}} + \eta_t.
+y_t = M x_t^{\mathrm{state}} + \eta_t.
 \]
 Because the ELB affects the transition, likelihood evaluation requires a nonlinear filter unless the solution imposes a structure that can be exploited.
 
@@ -536,7 +569,7 @@ Likelihood evaluation can be done by a bootstrap particle filter, and several pa
 
 \item \textbf{Piecewise-linear continuous (PLC) decision rules + COPF.}
 \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} construct globally piecewise-linear and continuous decision rules for OBC models and derive a \emph{conditionally optimal} particle filter (COPF) that exploits the piecewise-linear structure to reduce likelihood variance.
-In our reference implementation we include a PLC-style baseline by interpolating a discretized global benchmark decision rule and using a conditionally informed (local-linearization) proposal for the exogenous states; this is intended as a computationally lightweight proxy for the PLC/COPF logic.
+In our reference implementation we include a PLC-inspired baseline by interpolating a discretized global benchmark decision rule and using a conditionally informed (local-linearization) proposal for the exogenous states; this is intended as a computationally lightweight proxy for the PLC/COPF logic, not a full COPF replication.
 
 \item \textbf{PPPF with anticipated-shock quadrature and regime localization.}
 In the PPPF approach, we treat the ELB binding pattern over the EP horizon as part of the localization index $s_t$ and integrate over short-horizon anticipated shocks $\omega_t$ by sigma points/quadrature.
@@ -564,21 +597,21 @@ The implementation includes:
 \end{enumerate}
 
 In the NK--ELB experiment, the OccBin extended-path horizon is $H=20$.
-We solve the discretized global benchmark (Tauchen grid) and simulate a dataset of length $T=250$ from that benchmark, adding small independent measurement noise on $(\pi_t,x_t,i_t)$.
-For likelihood evaluation we use $N=256$ particles and repeat each filter run $R=30$ times with different random seeds to measure Monte Carlo variability.
+We solve the discretized global benchmark (Tauchen grid) and simulate a dataset of length $T=250$ from that benchmark, adding small independent measurement noise on $(\pi_t,\tilde y_t,i_t)$.
+For likelihood evaluation we use $N=256$ particles and repeat each filter run $N_{\mathrm{rep}}=30$ times with different random seeds to measure Monte Carlo variability.
 All artifacts (CSV + plots) are written under \texttt{pppf-mixture-rbpf/output/}.
 
 \paragraph{Exact likelihood for the discretized global benchmark (HMM forward algorithm).}
 The discretized global benchmark used in this experiment induces a finite-state hidden Markov model (HMM) for the exogenous state.
-Let $s_t\in\{1,\ldots,S\}$ index the Tauchen grid point for $(r_t^n,\nu_t)$ and let $P\in\R^{S\times S}$ be the resulting transition matrix.
-Solving the discretized global model delivers an expectation-consistent mapping from each grid point to observables $g(s)=(\pi(s),x(s),i(s))^\top$.
-With Gaussian measurement noise, $y_t\mid s_t \sim \mathcal{N}(g(s_t),R)$, the log-likelihood of the discretized benchmark can be computed exactly by the standard forward recursion:
+Let $g_t\in\{1,\ldots,S\}$ index the Tauchen grid point for $(r_t^n,\nu_t)$ and let $P\in\R^{S\times S}$ be the resulting transition matrix.
+Solving the discretized global model delivers an expectation-consistent mapping from each grid point to observables $h(g)=(\pi(g),\tilde y(g),i(g))^\top$.
+With Gaussian measurement noise, $y_t\mid g_t \sim \mathcal{N}(h(g_t),R)$, the log-likelihood of the discretized benchmark can be computed exactly by the standard forward recursion:
 \[
-\alpha_{t|t-1}(s')=\sum_{s=1}^S \alpha_{t-1}(s)\,P(s,s'),\qquad
-\tilde \alpha_t(s)=\alpha_{t|t-1}(s)\,p(y_t\mid s),\qquad
-z_t=\sum_{s=1}^S \tilde \alpha_t(s),
+\alpha_{t|t-1}(g')=\sum_{g=1}^S \alpha_{t-1}(g)\,P(g,g'),\qquad
+\tilde \alpha_t(g)=\alpha_{t|t-1}(g)\,p(y_t\mid g),\qquad
+z_t=\sum_{g=1}^S \tilde \alpha_t(g),
 \]
-with $\alpha_t(s)=\tilde \alpha_t(s)/z_t$ and $\log p(y_{1:T})=\sum_{t=1}^T \log z_t$.
+with $\alpha_t(g)=\tilde \alpha_t(g)/z_t$ and $\log p(y_{1:T})=\sum_{t=1}^T \log z_t$.
 This likelihood is exact for the \emph{discretized benchmark} (grid + global policy functions), not for the underlying continuous-state DSGE.
 
 \subsection{Illustrative results}
@@ -613,7 +646,7 @@ OccBin + bootstrap PF (no ELB) & 2342.8 & 1.8 & 745.0 & 10.0 & 196.3 \\
 PPPF-RBPF (no ELB; $K=1$) & 2345.0 & 0.0 & 1226.6 & 8.9 & 2048.0 \\
 \bottomrule
 \end{tabular}
-\caption{NK no-ELB sanity check (reference implementation): with the constraint inactive, the model is linear-Gaussian and PPPF with $\Var(\omega)=0$ (single component) coincides with the exact Kalman likelihood; the OccBin bootstrap particle filter approaches the same likelihood as $N$ grows. Reported statistics are across $R=10$ repeated filter runs on fixed data, with $T=250$ and $N=2048$ particles.}
+\caption{NK no-ELB sanity check (reference implementation): with the constraint inactive, the model is linear-Gaussian and PPPF with $\Var(\omega)=0$ (single component) coincides with the exact Kalman likelihood; the OccBin bootstrap particle filter approaches the same likelihood as $N$ grows. Reported statistics are across $N_{\mathrm{rep}}=10$ repeated filter runs on fixed data, with $T=250$ and $N=2048$ particles.}
 \label{tab:nk_no_elb_sanity}
 \end{table}
 
@@ -633,10 +666,10 @@ Method & Mean loglik & SD loglik & Mean runtime (ms) & SD runtime (ms) & Mean ES
 Global discrete benchmark (exact) & 2495.0 & 0.0 & 7.2 & 0.0 & -- \\
 OccBin + bootstrap PF & 2199.4 & 8.9 & 102.0 & 1.3 & 27.6 \\
 PPPF-mixture + RBPF & 2130.0 & 0.5 & 185.7 & 3.6 & 183.6 \\
-PLC (interp) + COPF-style PF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
+PLC (interp) + informed-proposal PF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
 \bottomrule
 \end{tabular}
-\caption{NK--ELB benchmark (reference implementation): likelihood variability across $R=30$ repeated particle-filter runs on fixed data, with $T=250$ and $N=256$ particles. The ``global discrete benchmark'' is exact for the discretized model.}
+\caption{NK--ELB benchmark (reference implementation): likelihood variability across $N_{\mathrm{rep}}=30$ repeated particle-filter runs on fixed data, with $T=250$ and $N=256$ particles. The ``global discrete benchmark'' is exact for the discretized model.}
 \label{tab:nk_summary}
 \end{table}
 
@@ -713,6 +746,19 @@ w_0^m=\frac{\lambda}{d+\lambda},\qquad w_i^m=\frac{1}{2(d+\lambda)}\;\;(i\ge 1),
 \]
 and covariance weights $w_0^c=w_0^m + (1-\alpha^2+\beta)$, $w_i^c=w_i^m$.
 Standard choices are $\alpha\in(0,1]$, $\beta=2$ (Gaussian prior), $\kappa=0$ \citep{JulierUhlmann2004}.
+\paragraph{Mixtures require nonnegative weights.}
+If sigma points are used \emph{as a probability mixture} (sampling a discrete index $k_t$), the quadrature weights must satisfy $w_k\ge 0$.
+For the UT parameterization above, this requires $\lambda\ge 0$ (hence $w_0^m\ge 0$); the common ``small-$\alpha$'' settings used in unscented Kalman filtering typically violate this and should be treated as \emph{signed quadrature} rather than a mixture distribution.
+\paragraph{A positive-weight alternative: third-degree spherical-radial cubature.}
+When nonnegative weights are required, a simple positive-weight rule for $\omega\sim\mathcal{N}(0,\Omega)$ uses $2d$ points:
+\[
+\omega^{(i)}=+\sqrt{d}\,\left[\sqrt{\Omega}\right]_{\cdot i},\qquad
+\omega^{(i+d)}=-\sqrt{d}\,\left[\sqrt{\Omega}\right]_{\cdot i},
+\quad i=1,\ldots,d,
+\qquad
+w_i=\frac{1}{2d}.
+\]
+This yields a bona fide probability mixture (all weights equal and nonnegative) and is exact for polynomials up to degree three under a Gaussian reference measure.
 
 \section{Microfoundation and variants of the NK--ELB benchmark}
 \label{app:nk}
