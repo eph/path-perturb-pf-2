@@ -310,6 +310,10 @@ inline Eigen::VectorXd initial_distribution_bilinear(const NkGlobalGrid& g, doub
 struct BilinearCell {
   int i = 0;
   int j = 0;
+  double tr = 0.0;
+  double tnu = 0.0;
+  double dr = 0.0;   // 1/(r1-r0) within the cell (0 if degenerate)
+  double dnu = 0.0;  // 1/(nu1-nu0) within the cell (0 if degenerate)
   double w00 = 1.0;
   double w10 = 0.0;
   double w01 = 0.0;
@@ -338,6 +342,10 @@ inline BilinearCell bilinear_cell(const NkGlobalGrid& g, double r0, double nu0) 
   const double nu1g = g.nu_grid[c.j + 1];
   const double tr = (r1g == r0g) ? 0.0 : (r - r0g) / (r1g - r0g);
   const double tnu = (nu1g == nu0g) ? 0.0 : (nu - nu0g) / (nu1g - nu0g);
+  c.tr = tr;
+  c.tnu = tnu;
+  c.dr = (r1g == r0g) ? 0.0 : 1.0 / (r1g - r0g);
+  c.dnu = (nu1g == nu0g) ? 0.0 : 1.0 / (nu1g - nu0g);
 
   c.w00 = (1.0 - tr) * (1.0 - tnu);
   c.w10 = tr * (1.0 - tnu);
@@ -354,12 +362,52 @@ inline double bilinear_interp(const NkGlobalGrid& g, const Eigen::MatrixXd& fiel
          c.w11 * field(i + 1, j + 1);
 }
 
+inline double bilinear_interp_grad(const NkGlobalGrid& g, const Eigen::MatrixXd& field, double r, double nu,
+                                  double* dfdr, double* dfdnu) {
+  const BilinearCell c = bilinear_cell(g, r, nu);
+  const int i = c.i;
+  const int j = c.j;
+  const double f00 = field(i, j);
+  const double f10 = field(i + 1, j);
+  const double f01 = field(i, j + 1);
+  const double f11 = field(i + 1, j + 1);
+
+  const double v = c.w00 * f00 + c.w10 * f10 + c.w01 * f01 + c.w11 * f11;
+  const double df_dtr = (f10 - f00) * (1.0 - c.tnu) + (f11 - f01) * c.tnu;
+  const double df_dtnu = (f01 - f00) * (1.0 - c.tr) + (f11 - f10) * c.tr;
+
+  if (dfdr) *dfdr = df_dtr * c.dr;
+  if (dfdnu) *dfdnu = df_dtnu * c.dnu;
+  return v;
+}
+
 inline Eigen::Vector3d nk_observables_plc(const NkParams& p, const NkGlobalGrid& g, double r, double nu) {
   // PLC-style interpolation of the global discrete benchmark policies.
   const double x = bilinear_interp(g, g.x, r, nu);
   const double pi = bilinear_interp(g, g.pi, r, nu);
-  double i = bilinear_interp(g, g.i, r, nu);
-  i = std::max(p.i_lower, i);
+  const double i = bilinear_interp(g, g.i, r, nu);
+  Eigen::Vector3d y;
+  y << pi, x, i;
+  return y;
+}
+
+inline Eigen::Vector3d nk_observables_plc_jacobian(const NkGlobalGrid& g, double r, double nu,
+                                                   Eigen::Matrix<double, 3, 2>* J) {
+  double dx_dr = 0.0, dx_dnu = 0.0;
+  double dpi_dr = 0.0, dpi_dnu = 0.0;
+  double di_dr = 0.0, di_dnu = 0.0;
+  const double x = bilinear_interp_grad(g, g.x, r, nu, &dx_dr, &dx_dnu);
+  const double pi = bilinear_interp_grad(g, g.pi, r, nu, &dpi_dr, &dpi_dnu);
+  const double i = bilinear_interp_grad(g, g.i, r, nu, &di_dr, &di_dnu);
+
+  if (J) {
+    (*J)(0, 0) = dpi_dr;
+    (*J)(0, 1) = dpi_dnu;
+    (*J)(1, 0) = dx_dr;
+    (*J)(1, 1) = dx_dnu;
+    (*J)(2, 0) = di_dr;
+    (*J)(2, 1) = di_dnu;
+  }
   Eigen::Vector3d y;
   y << pi, x, i;
   return y;

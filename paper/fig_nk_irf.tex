@@ -1,5 +1,5 @@
-% Vector replacement for ../pppf-mixture-rbpf/output/nk/irf.png
-% Data source: ../pppf-mixture-rbpf/output/nk/irf.csv
+% Vector replacement for data/nk/irf.csv
+% Data source: data/nk/irf.csv
 
 \begin{tikzpicture}
 \begin{groupplot}[
@@ -25,28 +25,28 @@
   legend to name=nk_irf_legend,
   legend columns=2,
 ]
-  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=x_global] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=x_occbin] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=x_pppf] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=x_plc] {../pppf-mixture-rbpf/output/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=x_global] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=x_occbin] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=x_pppf] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=x_plc] {data/nk/irf.csv};
   \legend{Global discrete, OccBin, PPPF, PLC}
 
 \nextgroupplot[
   ylabel={$\pi_t$},
 ]
-  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=pi_global] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=pi_occbin] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=pi_pppf] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=pi_plc] {../pppf-mixture-rbpf/output/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=pi_global] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=pi_occbin] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=pi_pppf] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=pi_plc] {data/nk/irf.csv};
 
 \nextgroupplot[
   xlabel={$t$},
   ylabel={$i_t$},
 ]
-  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=i_global] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=i_occbin] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=i_pppf] {../pppf-mixture-rbpf/output/nk/irf.csv};
-  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=i_plc] {../pppf-mixture-rbpf/output/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=i_global] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=i_occbin] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=i_pppf] {data/nk/irf.csv};
+  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table [col sep=comma, x=t, y=i_plc] {data/nk/irf.csv};
 
 \end{groupplot}
 

@@ -613,7 +613,7 @@ Because the ELB affects the transition, likelihood evaluation requires a nonline
 
 The benchmark compares three likelihood-evaluation strategies that differ in how they approximate the transition kernel near the ELB kink and how they control Monte Carlo variance.
 First, an OccBin-style piecewise-linear extended-path solution \citep{GuerrieriIacoviello2015} can be embedded in a bootstrap particle filter (or related inversion-filter variants when shocks are approximately identified).
-Second, the piecewise-linear continuous (PLC) approximation of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} delivers globally piecewise-linear decision rules and supports a conditionally optimal particle filter (COPF) that exploits the resulting structure; we use a PLC-inspired baseline based on interpolated global decision rules and an informed proposal for the exogenous states to provide a computationally lightweight point of comparison.
+Second, the piecewise-linear continuous (PLC) approximation of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} delivers globally piecewise-linear decision rules and supports a conditionally optimal particle filter (COPF) that exploits the resulting structure; our benchmark includes a PLC-based baseline that filters only the exogenous state and uses a conditionally optimal proposal under a locally affine PLC measurement mapping.
 Third, PPPF constructs a Gaussian-mixture transition by integrating over a short-horizon anticipated-shock object $\omega_t$ and, for OBC models, conditions on a discrete localization index $s_t$ that selects a smooth binding or slack system.
 In ELB applications this regime conditioning also resolves the differentiability issue induced by the max operator, and motivates carrying a small mixture over regimes near the boundary rather than relying on hard regime selection.
 
@@ -686,11 +686,11 @@ PPPF-RBPF (no ELB) & 2345.0 & 0.0 & 1226.6 & 8.9 & 2048.0 \\
 \end{table}
 
 We then turn to the NK--ELB benchmark.
-In what follows, OccBin-PF denotes OccBin coupled with a bootstrap particle filter, PPPF-RBPF denotes the PPPF mixture kernel coupled with a Rao--Blackwellized particle filter, and PLC-IPF denotes the PLC-inspired interpolation baseline with an observation-informed proposal.
+In what follows, OccBin-PF denotes OccBin coupled with a bootstrap particle filter, PPPF-RBPF denotes the PPPF mixture kernel coupled with a Rao--Blackwellized particle filter, and PLC-COPF denotes the PLC-based baseline with a conditionally optimal proposal under a locally affine PLC measurement mapping.
 Table~\ref{tab:nk_summary} reports summary statistics from the benchmark comparison.
 We simulate data from the discretized global benchmark and compute its exact likelihood by the HMM forward algorithm described above.
 Relative to OccBin-PF, PPPF-RBPF delivers much higher ESS and substantially lower Monte Carlo variability of the likelihood estimator, consistent with the variance-reduction role of Rao--Blackwellization.
-We also report a PLC-inspired baseline obtained by interpolating the global (discretized) benchmark policies on the $(r^n,\nu)$ grid and filtering only the exogenous states with a conditionally informed proposal based on local linearization; this provides a concrete point of contact with the PLC/COPF perspective of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021}.
+We also report a PLC-based baseline obtained by interpolating the global (discretized) benchmark policies on the $(r^n,\nu)$ grid and filtering only the exogenous state $(r_t^n,\nu_t)$ using the conditionally optimal proposal associated with a local affine approximation of the PLC measurement mapping; this provides a concrete point of contact with the PLC/COPF perspective of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021}.
 The results separate Monte Carlo variance from approximation bias: Rao--Blackwellization and observation-informed proposals reduce Monte Carlo variability (high ESS and low dispersion across repeated runs), but approximation bias persists whenever the transition kernel used for likelihood evaluation differs materially from the data-generating benchmark (finite-horizon truncation, local linearization, low-dimensional anticipated-shock objects, or grid discretization).
 
 \begin{table}[t]
@@ -701,10 +701,10 @@ The results separate Monte Carlo variance from approximation bias: Rao--Blackwel
 \toprule
 Method & Mean loglik & SD loglik & Mean time (ms) & SD time (ms) & Mean ESS \\
 \midrule
-Benchmark (exact) & 2495.0 & 0.0 & 7.2 & 0.0 & -- \\
-OccBin-PF & 2199.4 & 8.9 & 102.0 & 1.3 & 27.6 \\
-PPPF-RBPF & 2130.0 & 0.5 & 185.7 & 3.6 & 183.6 \\
-PLC-IPF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
+Benchmark (exact) & 2495.0 & 0.0 & 7.8 & 0.0 & -- \\
+OccBin-PF & 2199.4 & 8.9 & 101.0 & 1.8 & 27.6 \\
+PPPF-RBPF & 2105.2 & 1.9 & 285.9 & 6.5 & 179.3 \\
+PLC-COPF & 2405.6 & 1.3 & 18.1 & 0.1 & 160.8 \\
 \bottomrule
 \end{tabular}
 \caption{NK--ELB benchmark: repeated log-likelihood estimates on fixed data across $N_{\mathrm{rep}}=30$ filter runs, with $T=250$ and $N=256$ particles. The benchmark likelihood is exact for the discretized model.}
@@ -751,7 +751,7 @@ A New Keynesian ELB benchmark offers a natural comparison to the OccBin and PLC/
 
 The benchmark likelihood computed by the forward recursion is exact only for the discretized global model used to generate the data, not for the underlying continuous-state DSGE.
 Consequently, differences in likelihood across methods reflect both approximation error in the transition kernel and the discretization inherent in the benchmark.
-In addition, while the PLC-inspired baseline in Section~\ref{sec:nk_benchmark} is designed to connect to the PLC/COPF perspective, a full conditionally optimal proposal tailored to the PLC approximation is a natural extension.
+In addition, while the PLC-based baseline in Section~\ref{sec:nk_benchmark} is designed to connect to the PLC/COPF perspective, a fully regime-exact COPF that integrates over PLC partition indices without local linearization remains a natural extension.
 
 The NK--ELB results highlight that PPPF can deliver substantial variance reduction (high ESS, low Monte Carlo variability) while still exhibiting approximation bias when any of the four approximation axes is too crude.
 Reducing this bias requires sharpening the regime treatment at the ELB boundary (including regime mixtures near the kink), designing genuinely low-dimensional anticipated-shock objects so that positive-weight quadrature is feasible at moderate $K$, and implementing the ablation suite in Section~\ref{sec:nk_benchmark} to attribute remaining discrepancies to $(H,K)$, anchor reuse, and regime handling.

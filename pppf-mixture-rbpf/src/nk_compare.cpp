@@ -136,27 +136,6 @@ RunResult run_plc_copf_pf(const models::NkParams& p, const models::NkGlobalGrid&
   RunResult res;
   res.ess.reserve(static_cast<int>(y.size()));
 
-  auto yhat = [&](const Eigen::Vector2d& s) {
-    return models::nk_observables_plc(p, grid, s(0), s(1));
-  };
-
-  auto jac_yhat = [&](const Eigen::Vector2d& s) {
-    const double h = 1e-5;
-    Eigen::Matrix<double, 3, 2> J;
-    const Eigen::Vector3d f0 = yhat(s);
-    (void)f0;
-    for (int j = 0; j < 2; ++j) {
-      Eigen::Vector2d sp = s;
-      Eigen::Vector2d sm = s;
-      sp(j) += h;
-      sm(j) -= h;
-      const Eigen::Vector3d fp = yhat(sp);
-      const Eigen::Vector3d fm = yhat(sm);
-      J.col(j) = (fp - fm) / (2.0 * h);
-    }
-    return J;
-  };
-
   for (int t = 0; t < static_cast<int>(y.size()); ++t) {
     Eigen::VectorXd logw_new(N);
     for (int i = 0; i < N; ++i) {
@@ -164,9 +143,9 @@ RunResult run_plc_copf_pf(const models::NkParams& p, const models::NkGlobalGrid&
       const Eigen::Vector2d m = A * s_prev;
       const Eigen::Matrix2d P = Q;
 
-      // EKF-style proposal q(s_t | s_{t-1}, y_t) for conditionally-informed sampling.
-      const Eigen::Vector3d y_m = yhat(m);
-      const Eigen::Matrix<double, 3, 2> H = jac_yhat(m);
+      // PLC-COPF proposal: treat the PLC interpolation as locally affine at the prior mean m.
+      Eigen::Matrix<double, 3, 2> H;
+      const Eigen::Vector3d y_m = models::nk_observables_plc_jacobian(grid, m(0), m(1), &H);
       Eigen::Matrix3d S = H * P * H.transpose() + R;
 
       Eigen::LLT<Eigen::Matrix3d> llt(S);
@@ -196,12 +175,10 @@ RunResult run_plc_copf_pf(const models::NkParams& p, const models::NkGlobalGrid&
       const Eigen::Vector2d s_t = m_post + L * rng.normal_vec(2);
       particles[i].s = s_t;
 
-      const Eigen::Vector3d y_s = yhat(s_t);
-      const double ll = util::log_mvnorm_pdf(y[t], y_s, R);
-
-      const double log_prior = util::log_mvnorm_pdf(s_t, m, Q);
-      const double log_prop = util::log_mvnorm_pdf(s_t, m_post, P_post);
-      logw_new(i) = logw(i) + ll + log_prior - log_prop;
+      // Under the locally affine PLC measurement, this is the conditionally optimal proposal,
+      // so the incremental weight is the predictive likelihood p(y_t | s_{t-1}).
+      const double ll_pred = util::log_mvnorm_pdf(y[t], y_m, S);
+      logw_new(i) = logw(i) + ll_pred;
     }
 
     const double logZ = util::log_sum_exp(logw_new);

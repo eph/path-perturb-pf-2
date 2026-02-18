@@ -1,9 +1,9 @@
 % Vector replacement for:
-%   ../pppf-mixture-rbpf/output/nk/loglik_hist.png
-%   ../pppf-mixture-rbpf/output/nk/ess.png
+%   data/nk/loglik_repeats.csv
+%   data/nk/ess.csv
 % Data sources:
-%   ../pppf-mixture-rbpf/output/nk/loglik_repeats.csv
-%   ../pppf-mixture-rbpf/output/nk/ess.csv
+%   data/nk/loglik_repeats.csv
+%   data/nk/ess.csv
 
 \newcommand{\PPPFKeepMethodRow}[1]{%
   \edef\PPPFMethodWanted{#1}%
@@ -47,7 +47,7 @@
     col sep=comma,
     y=loglik,
     row predicate/.code={\PPPFKeepMethodRow{occbin_bootstrap_pf}},
-  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+  ] {data/nk/loglik_repeats.csv};
 
   \addplot+[
     boxplot,
@@ -58,7 +58,7 @@
     col sep=comma,
     y=loglik,
     row predicate/.code={\PPPFKeepMethodRow{pppf_mixture_rbpf}},
-  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+  ] {data/nk/loglik_repeats.csv};
 
   \addplot+[
     boxplot,
@@ -69,7 +69,7 @@
     col sep=comma,
     y=loglik,
     row predicate/.code={\PPPFKeepMethodRow{plc_copf_pf}},
-  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+  ] {data/nk/loglik_repeats.csv};
 
 % (Right) ESS over time
 \nextgroupplot[
@@ -83,17 +83,17 @@
     col sep=comma,
     x=t, y=ess,
     row predicate/.code={\PPPFKeepMethodRow{occbin_bootstrap_pf}},
-  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  ] {data/nk/ess.csv};
   \addplot+[line width=0.9pt, color=pppfBlue] table[
     col sep=comma,
     x=t, y=ess,
     row predicate/.code={\PPPFKeepMethodRow{pppf_mixture_rbpf}},
-  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  ] {data/nk/ess.csv};
   \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table[
     col sep=comma,
     x=t, y=ess,
     row predicate/.code={\PPPFKeepMethodRow{plc_copf_pf}},
-  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  ] {data/nk/ess.csv};
   \legend{OccBin, PPPF, PLC}
 
 \end{groupplot}
