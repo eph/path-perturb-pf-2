@@ -9,7 +9,7 @@ try:
 except Exception:  # pragma: no cover
     plt = None
 
-from simple_png_plot import plot_hist_png, plot_lines_png
+from pretty_png_plot import plot_hist_png, plot_lines_png, plot_panels_lines_png
 
 
 def read_loglik(path: Path):
@@ -140,12 +140,15 @@ def main():
         fig.savefig(png, dpi=150)
         plt.close(fig)
     else:
-        # Fallback: plot interest rate only (single panel) to keep the renderer minimal.
-        plot_lines_png(
+        plot_panels_lines_png(
             png,
             t,
-            {"Global": irf["i_global"], "OccBin": irf["i_occbin"], "PPPF": irf["i_pppf"]},
-            title="NK IRF I (ELB)",
+            [
+                ("x", {"Global": irf["x_global"], "OccBin": irf["x_occbin"], "PPPF": irf["x_pppf"]}),
+                ("pi", {"Global": irf["pi_global"], "OccBin": irf["pi_occbin"], "PPPF": irf["pi_pppf"]}),
+                ("i", {"Global": irf["i_global"], "OccBin": irf["i_occbin"], "PPPF": irf["i_pppf"]}),
+            ],
+            title="NK IRF near ELB (negative r^n shock)",
         )
     print(f"Wrote {png}")
 

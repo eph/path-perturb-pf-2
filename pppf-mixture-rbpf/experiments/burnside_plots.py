@@ -8,7 +8,7 @@ try:
 except Exception:  # pragma: no cover
     plt = None
 
-from simple_png_plot import plot_lines_png
+from pretty_png_plot import plot_lines_png
 
 
 def read_csv(path: Path):

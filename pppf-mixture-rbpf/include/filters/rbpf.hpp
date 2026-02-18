@@ -33,14 +33,17 @@ struct ObsModel {
   Eigen::MatrixXd R;
 };
 
+// ObsUpdate: returns log p(y_t | pred, k, ...) and updates the KalmanState in place.
+using ObsUpdate =
+    std::function<double(int, const Eigen::VectorXd&, int, statespace::KalmanState*)>;
+
 inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::MatrixXd& cov0,
                             const std::vector<Eigen::VectorXd>& y,
                             const std::function<statespace::GaussianMixtureTransition(
                                 int, const Eigen::VectorXd&)>&
                                 mixture_builder,
-                            const std::function<ObsModel(int, const statespace::KalmanState&, int)>&
-                                obs_model,
-                            util::Rng& rng, double ess_frac = 0.5) {
+                            const ObsUpdate& obs_update, util::Rng& rng, double ess_frac = 0.5,
+                            bool optimal_index_proposal = false) {
   if (N <= 0) throw std::invalid_argument("rbpf: N<=0");
   const int T = static_cast<int>(y.size());
 
@@ -67,18 +70,41 @@ inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::Ma
     // Predict + update under sampled k per particle.
     Eigen::VectorXd logw_new(N);
     for (int i = 0; i < N; ++i) {
-      const int k = rng.categorical(mix.weights);
+      if (!optimal_index_proposal) {
+        const int k = rng.categorical(mix.weights);
+        particles[i].k = k;
+        const auto& tr = mix.components[k];
+
+        statespace::KalmanState pred = particles[i].kf;
+        statespace::kalman_predict(tr.A, tr.a, tr.Q, &pred);
+
+        const double ll = obs_update(t, y[t], k, &pred);
+
+        particles[i].kf = pred;
+        logw_new(i) = logw(i) + ll;
+        continue;
+      }
+
+      const int K = mix.size();
+      std::vector<statespace::KalmanState> preds(K);
+      Eigen::VectorXd logwk(K);
+
+      for (int k = 0; k < K; ++k) {
+        preds[k] = particles[i].kf;
+        const auto& tr = mix.components[k];
+        statespace::kalman_predict(tr.A, tr.a, tr.Q, &preds[k]);
+        const double ll = obs_update(t, y[t], k, &preds[k]);
+        logwk(k) = std::log(mix.weights[k]) + ll;
+      }
+
+      const double log_norm = util::log_sum_exp(logwk);
+      std::vector<double> probs(K);
+      for (int k = 0; k < K; ++k) probs[k] = std::exp(logwk(k) - log_norm);
+
+      const int k = rng.categorical(probs);
       particles[i].k = k;
-      const auto& tr = mix.components[k];
-
-      statespace::KalmanState pred = particles[i].kf;
-      statespace::kalman_predict(tr.A, tr.a, tr.Q, &pred);
-
-      const ObsModel om = obs_model(t, pred, k);
-      const double ll = statespace::kalman_update(om.H, om.d, om.R, y[t], &pred);
-
-      particles[i].kf = pred;
-      logw_new(i) = logw(i) + ll;
+      particles[i].kf = preds[k];
+      logw_new(i) = logw(i) + log_norm;
     }
 
     const double logZ = util::log_sum_exp(logw_new);
@@ -101,6 +127,23 @@ inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::Ma
   }
 
   return diag;
+}
+
+// Backward-compatible overload: linear-Gaussian observation model provided as (H,d,R).
+inline RbpfDiagnostics rbpf(int N, const Eigen::VectorXd& mean0, const Eigen::MatrixXd& cov0,
+                            const std::vector<Eigen::VectorXd>& y,
+                            const std::function<statespace::GaussianMixtureTransition(
+                                int, const Eigen::VectorXd&)>&
+                                mixture_builder,
+                            const std::function<ObsModel(int, const statespace::KalmanState&, int)>&
+                                obs_model,
+                            util::Rng& rng, double ess_frac = 0.5) {
+  const ObsUpdate obs_update = [&](int t, const Eigen::VectorXd& y_t, int k,
+                                   statespace::KalmanState* st) -> double {
+    const ObsModel om = obs_model(t, *st, k);
+    return statespace::kalman_update(om.H, om.d, om.R, y_t, st);
+  };
+  return rbpf(N, mean0, cov0, y, mixture_builder, obs_update, rng, ess_frac, false);
 }
 
 }  // namespace filters

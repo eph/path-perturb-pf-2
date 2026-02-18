@@ -71,44 +71,29 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
     return models::build_pppf_mixture(p, z_ref);
   };
 
-  const auto obs_model = [&](int /*t*/, const statespace::KalmanState& pred, int /*k*/) {
-    const Eigen::Vector4d z = pred.mean;
+  const auto obs_update = [&](int /*t*/, const Eigen::VectorXd& y_t, int /*k*/,
+                              statespace::KalmanState* st) -> double {
+    // Linear measurements: y = [pi, x, i]
+    Eigen::Matrix<double, 2, 4> Hlin = Eigen::Matrix<double, 2, 4>::Zero();
+    Hlin(0, 1) = 1.0;  // pi
+    Hlin(1, 0) = 1.0;  // x
+    Eigen::Vector2d dlin = Eigen::Vector2d::Zero();
+    Eigen::Matrix2d Rlin = Eigen::Matrix2d::Zero();
+    Rlin(0, 0) = R(0, 0);
+    Rlin(1, 1) = R(1, 1);
+    const Eigen::Vector2d ylin = y_t.head(2);
+
+    double ll = statespace::kalman_update(Hlin, dlin, Rlin, ylin, st);
+
+    // Censored measurement for i: i = max(i_lower, i_ss + phi_pi*pi + phi_x*x + nu) + noise.
     const Eigen::RowVector4d h_rule =
         (Eigen::RowVector4d() << p.phi_x, p.phi_pi, 0.0, 1.0).finished();
-    const double i_rule_mean = p.i_ss + (h_rule * z)(0);
-    const double i_rule_var = (h_rule * pred.cov * h_rule.transpose())(0, 0);
-    const double i_rule_sd = std::sqrt(std::max(0.0, i_rule_var));
-    double p_bind = 0.0;
-    if (i_rule_sd < 1e-12) {
-      p_bind = (i_rule_mean <= p.i_lower) ? 1.0 : 0.0;
-    } else {
-      const double zscore = (p.i_lower - i_rule_mean) / i_rule_sd;
-      p_bind = 0.5 * (1.0 + std::erf(zscore / std::sqrt(2.0)));
-      p_bind = std::min(1.0, std::max(0.0, p_bind));
-    }
-    const bool bind = (rng.uniform() < p_bind);
-
-    filters::ObsModel om;
-    om.H = Eigen::Matrix<double, 3, 4>::Zero();
-    om.d = Eigen::Vector3d::Zero();
-    om.R = R;
-
-    // y = [pi, x, i]
-    om.H(0, 1) = 1.0;
-    om.H(1, 0) = 1.0;
-    if (bind) {
-      om.d(2) = p.i_lower;
-    } else {
-      om.H(2, 0) = p.phi_x;
-      om.H(2, 1) = p.phi_pi;
-      om.H(2, 3) = 1.0;
-      om.d(2) = p.i_ss;
-    }
-    return om;
+    ll += statespace::kalman_update_censored_lower(h_rule, p.i_ss, p.i_lower, R(2, 2), y_t(2), st);
+    return ll;
   };
 
   const filters::RbpfDiagnostics diag =
-      filters::rbpf(N, mean0, cov0, y, mixture_builder, obs_model, rng, 0.5);
+      filters::rbpf(N, mean0, cov0, y, mixture_builder, obs_update, rng, 0.5, true);
 
   RunResult res;
   res.loglik = diag.loglik;
@@ -192,20 +177,47 @@ int main() {
     const std::filesystem::path out_dir = "output/nk";
     util::ensure_dir(out_dir);
 
-    // Simulate a dataset from the OccBin-based Markov approximation.
+    // Solve the global discrete-state benchmark (Tauchen grid) once; used for data + IRFs.
+    models::NkGlobalGrid grid = models::make_default_global_grid(p);
+    models::NkGlobalSolveOptions gopt;
+    gopt.max_iter = 80;
+    gopt.tol = 1e-10;
+    gopt.fb_eps = 1e-12;
+    util::Timer tglob;
+    models::solve_nk_global_policy(p, &grid, gopt);
+    std::cout << "Solved global NK policy (Tauchen grid) in " << tglob.elapsed_ms() << " ms\n";
+
+    const int nr = static_cast<int>(grid.r_grid.size());
+    const int nn = static_cast<int>(grid.nu_grid.size());
+    const int S = nr * nn;
+
+    // Simulate a dataset from the global discrete-state benchmark.
     const std::uint64_t seed_data = 20260113ULL;
     util::Rng rng_data(seed_data);
 
     std::vector<Eigen::Vector4d> z_true(T);
     std::vector<Eigen::VectorXd> y_obs(T);
 
-    Eigen::Vector4d z_prev = Eigen::Vector4d::Zero();
+    Eigen::VectorXd d0 = models::initial_distribution_bilinear(grid, 0.0, 0.0);
+    std::vector<double> d0v(S);
+    for (int s = 0; s < S; ++s) d0v[s] = d0(s);
+    int s_prev = rng_data.categorical(d0v);
+
     int bind_count = 0;
     for (int t = 0; t < T; ++t) {
-      const double eps_r = rng_data.normal();
-      const double eps_nu = rng_data.normal();
-      const Eigen::Vector4d z_t = models::nk_transition_markov(p, z_prev, eps_r, eps_nu);
-      const Eigen::Vector3d y_t = models::nk_observables(p, z_t);
+      const int i = s_prev / nn;
+      const int j = s_prev % nn;
+      const double r = grid.r_grid[i];
+      const double nu = grid.nu_grid[j];
+      const double x = grid.x(i, j);
+      const double pi = grid.pi(i, j);
+      const double irate = grid.i(i, j);
+
+      Eigen::Vector4d z_t;
+      z_t << x, pi, r, nu;
+
+      Eigen::Vector3d y_t;
+      y_t << pi, x, irate;
       Eigen::Vector3d y_noisy = y_t;
       y_noisy(0) += meas_sd_pi * rng_data.normal();
       y_noisy(1) += meas_sd_x * rng_data.normal();
@@ -213,8 +225,12 @@ int main() {
       y_obs[t] = y_noisy;
       z_true[t] = z_t;
 
-      if (std::abs(y_t(2) - p.i_lower) < 1e-12) ++bind_count;
-      z_prev = z_t;
+      if (std::abs(irate - p.i_lower) < 1e-12) ++bind_count;
+
+      // Sample next discrete state.
+      std::vector<double> row(S);
+      for (int sp = 0; sp < S; ++sp) row[sp] = grid.P(s_prev, sp);
+      s_prev = rng_data.categorical(row);
     }
 
     std::cout << "Simulated NK dataset: T=" << T << ", ELB binds in " << bind_count << " periods\n";
@@ -241,9 +257,42 @@ int main() {
     std::map<std::string, std::vector<double>> rt_by_method;
     std::map<std::string, double> mean_ess_by_method;
 
-    for (const std::string& method : {"occbin_bootstrap_pf", "pppf_mixture_rbpf"}) {
+    for (const std::string& method : {"occbin_bootstrap_pf", "pppf_mixture_rbpf", "global_discrete_exact"}) {
       loglik_by_method[method] = {};
       rt_by_method[method] = {};
+    }
+
+    // Exact likelihood for the discretized global benchmark (forward algorithm on the HMM).
+    {
+      util::Timer t_exact;
+      Eigen::VectorXd alpha = d0;
+      double ll = 0.0;
+      for (int t = 0; t < T; ++t) {
+        // Predict: alpha_pred(sp) = sum_s alpha(s) P(s, sp)
+        Eigen::VectorXd alpha_pred = grid.P.transpose() * alpha;
+
+        // Weight by observation likelihood at each discrete state.
+        Eigen::VectorXd logg(S);
+        for (int i = 0; i < nr; ++i) {
+          for (int j = 0; j < nn; ++j) {
+            const int s = i * nn + j;
+            Eigen::Vector3d yhat;
+            yhat << grid.pi(i, j), grid.x(i, j), grid.i(i, j);
+            logg(s) = util::log_mvnorm_pdf(y_obs[t], yhat, Rm);
+          }
+        }
+        Eigen::VectorXd g = logg.array().exp().matrix();
+        Eigen::VectorXd alpha_unnorm = alpha_pred.array() * g.array();
+        const double z = alpha_unnorm.sum();
+        if (!(z > 0.0) || !std::isfinite(z)) throw std::runtime_error("global_exact: alpha sum");
+        ll += std::log(z);
+        alpha = alpha_unnorm / z;
+      }
+
+      loglik_by_method["global_discrete_exact"].push_back(ll);
+      rt_by_method["global_discrete_exact"].push_back(t_exact.elapsed_ms());
+      mean_ess_by_method["global_discrete_exact"] = -1.0;
+      util::write_csv_row(ll_out, "global_discrete_exact", 0, ll, t_exact.elapsed_ms());
     }
 
     for (int rep = 0; rep < R; ++rep) {
@@ -328,7 +377,7 @@ int main() {
     for (int t = 0; t < Tirf; ++t) {
       const double eps_mean = (t == 0) ? shock_eps_r : 0.0;
       const double eps_var = 1.0;
-      const auto mix = models::build_pppf_mixture(p, z_mean, eps_mean, eps_var);
+      const auto mix = models::build_pppf_mixture(p, z_mean, 0.0, 1.0, eps_mean, eps_var);
 
       Eigen::Vector4d z_next = Eigen::Vector4d::Zero();
       Eigen::Matrix4d P_next = Eigen::Matrix4d::Zero();
@@ -366,15 +415,6 @@ int main() {
     }
 
     // Global stochastic solution on a discrete Markov chain (state-space, expectation-consistent).
-    models::NkGlobalGrid grid = models::make_default_global_grid(p);
-    models::NkGlobalSolveOptions gopt;
-    gopt.max_iter = 80;
-    gopt.tol = 1e-10;
-    gopt.fb_eps = 1e-12;
-    util::Timer tglob;
-    models::solve_nk_global_policy(p, &grid, gopt);
-    std::cout << "Solved global NK policy (Tauchen grid) in " << tglob.elapsed_ms() << " ms\n";
-
     models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
 
     const std::filesystem::path irf_csv = out_dir / "irf.csv";

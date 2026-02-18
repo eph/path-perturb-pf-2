@@ -27,6 +27,24 @@ inline Eigen::Vector4d nk_transition_markov(const NkParams& p, const Eigen::Vect
   return z_next;
 }
 
+inline Eigen::Vector4d nk_transition_markov_anticipated(const NkParams& p, const Eigen::Vector4d& z_prev,
+                                                        double eps_r, double eps_nu,
+                                                        double omega_r_next) {
+  const double r_next = p.rho_r * z_prev(2) + p.sigma_r * eps_r;
+  const double nu_next = p.rho_nu * z_prev(3) + p.sigma_nu * eps_nu;
+
+  // Anticipated shock object: insert a (single) future innovation at t+2 inside the OccBin path solve.
+  std::vector<double> eps_r_path(p.horizon, 0.0);
+  std::vector<double> eps_nu_path(p.horizon, 0.0);
+  if (p.horizon > 0) eps_r_path[0] = omega_r_next;
+
+  const NkPath path = solve_nk_occbin_path(p, r_next, nu_next, eps_r_path, eps_nu_path);
+
+  Eigen::Vector4d z_next;
+  z_next << path.x[0], path.pi[0], r_next, nu_next;
+  return z_next;
+}
+
 inline double nk_policy_rate(const NkParams& p, const Eigen::Vector4d& z) {
   const double i_rule = p.i_ss + p.phi_pi * z(1) + p.phi_x * z(0) + z(3);
   return std::max(p.i_lower, i_rule);
@@ -41,12 +59,15 @@ inline Eigen::Vector3d nk_observables(const NkParams& p, const Eigen::Vector4d& 
 
 // Builds a UT-indexed mixture of linear-Gaussian transitions around a reference z_prev.
 //
-// - Discrete mixture index integrates over eps_r (standard normal innovation).
-// - Remaining Gaussian noise is eps_nu (standard normal).
+// - Discrete mixture index integrates over a 1D anticipated-shock object omega (standard normal)
+//   inserted into the perfect-foresight/OccBin path solve to approximate expectations.
+// - Unexpected one-step Gaussian innovations (eps_r, eps_nu) are integrated analytically via Q.
 inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& p,
                                                                 const Eigen::Vector4d& z_ref,
-                                                                double eps_r_mean = 0.0,
-                                                                double eps_r_var = 1.0,
+                                                                double omega_mean = 0.0,
+                                                                double omega_var = 1.0,
+                                                                double unexpected_eps_r_mean = 0.0,
+                                                                double unexpected_eps_r_var = 1.0,
                                                                 double fd_eps = 1e-6) {
   // For a *probability* mixture (RBPF needs to sample indices), we require nonnegative weights.
   // The common UKF choice (alpha=1e-2, kappa=0) yields a large negative w0 in 1D, so we instead
@@ -55,7 +76,7 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   const double kappa_ut = 2.0;
   const double beta_ut = 2.0;
   const auto sp =
-      quadrature::unscented_sigma_points_1d(eps_r_mean, eps_r_var, alpha_ut, kappa_ut, beta_ut);
+      quadrature::unscented_sigma_points_1d(omega_mean, omega_var, alpha_ut, kappa_ut, beta_ut);
   const int K = static_cast<int>(sp.points.rows());
 
   statespace::GaussianMixtureTransition mix;
@@ -63,26 +84,33 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   mix.weights.resize(K);
 
   for (int k = 0; k < K; ++k) {
-    const double eps_r_node = sp.points(k, 0);
+    const double omega_node = sp.points(k, 0);
     mix.weights[k] = sp.w_mean(k);
 
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
-      const Eigen::Vector4d z_out = nk_transition_markov(p, z4, eps_r_node, 0.0);
+      const Eigen::Vector4d z_out = nk_transition_markov_anticipated(p, z4, 0.0, 0.0, omega_node);
       return z_out;
     };
 
     const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
-    const Eigen::Vector4d z_mean = nk_transition_markov(p, z_ref, eps_r_node, 0.0);
+    Eigen::Vector4d z_mean = nk_transition_markov_anticipated(p, z_ref, 0.0, 0.0, omega_node);
+
+    // Unexpected-shock mean shift for IRFs (filter uses eps_r_mean=0).
+    const double h = 1e-6;
+    const Eigen::Vector4d zrp = nk_transition_markov_anticipated(p, z_ref, +h, 0.0, omega_node);
+    const Eigen::Vector4d zrm = nk_transition_markov_anticipated(p, z_ref, -h, 0.0, omega_node);
+    const Eigen::Vector4d Br = (zrp - zrm) / (2.0 * h);  // derivative wrt eps_r
+    z_mean += Br * unexpected_eps_r_mean;
+
     const Eigen::Vector4d a = z_mean - A * z_ref;
 
-    // Noise mapping for eps_nu.
-    const double h = 1e-6;
-    const Eigen::Vector4d zp = nk_transition_markov(p, z_ref, eps_r_node, +h);
-    const Eigen::Vector4d zm = nk_transition_markov(p, z_ref, eps_r_node, -h);
-    const Eigen::Vector4d B = (zp - zm) / (2.0 * h);  // derivative wrt eps_nu
+    // Noise mapping for unexpected eps_r and eps_nu.
+    const Eigen::Vector4d znp = nk_transition_markov_anticipated(p, z_ref, 0.0, +h, omega_node);
+    const Eigen::Vector4d znm = nk_transition_markov_anticipated(p, z_ref, 0.0, -h, omega_node);
+    const Eigen::Vector4d Bn = (znp - znm) / (2.0 * h);  // derivative wrt eps_nu
 
-    Eigen::Matrix4d Q = B * B.transpose();
+    Eigen::Matrix4d Q = unexpected_eps_r_var * (Br * Br.transpose()) + (Bn * Bn.transpose());
     Q += 1e-10 * Eigen::Matrix4d::Identity();
 
     mix.components[k].A = A;

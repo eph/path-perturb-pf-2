@@ -547,7 +547,8 @@ The implementation includes:
 \item a New Keynesian ELB benchmark comparing (i) an OccBin-style piecewise solution paired with a bootstrap particle filter and (ii) a PPPF-style Gaussian-mixture transition paired with an RBPF.
 \end{enumerate}
 
-In the NK--ELB experiment, the OccBin extended-path horizon is $H=20$ and we simulate a dataset of length $T=250$ with small independent measurement noise on $(\pi_t,x_t,i_t)$.
+In the NK--ELB experiment, the OccBin extended-path horizon is $H=20$.
+We solve the discretized global benchmark (Tauchen grid) and simulate a dataset of length $T=250$ from that benchmark, adding small independent measurement noise on $(\pi_t,x_t,i_t)$.
 For likelihood evaluation we use $N=256$ particles and repeat each filter run $R=30$ times with different random seeds to measure Monte Carlo variability.
 All artifacts (CSV + plots) are written under \texttt{pppf-mixture-rbpf/output/}.
 
@@ -566,8 +567,9 @@ The UT approximation tracks curvature effects better than certainty equivalence,
 
 We then turn to the NK--ELB benchmark.
 Table~\ref{tab:nk_summary} reports summary statistics from the reference implementation.
-The PPPF-mixture-RBPF delivers higher ESS and lower Monte Carlo variability of the likelihood estimator at a lower runtime cost, consistent with the variance-reduction role of Rao--Blackwellization.
-However, in this minimal implementation the mean log-likelihood differs substantially from the OccBin-based baseline, reflecting approximation bias from finite-horizon, local-linearization, and low-dimensional quadrature choices.
+We simulate data from the discretized global benchmark and compute its (exact) likelihood by a forward algorithm on the discrete Markov chain.
+Relative to OccBin + bootstrap PF, the PPPF-mixture-RBPF delivers much higher ESS and substantially lower Monte Carlo variability of the likelihood estimator, consistent with the variance-reduction role of Rao--Blackwellization.
+The tradeoff is higher runtime per likelihood evaluation and (in this configuration) a larger approximation bias relative to the global discrete benchmark.
 
 \begin{table}[t]
 \centering
@@ -575,11 +577,12 @@ However, in this minimal implementation the mean log-likelihood differs substant
 \toprule
 Method & Mean loglik & SD loglik & Mean runtime (ms) & SD runtime (ms) & Mean ESS \\
 \midrule
-OccBin + bootstrap PF & 492.3 & 949.2 & 115.6 & 2.5 & 17.3 \\
-PPPF-mixture + RBPF & $-19640.3$ & 171.4 & 67.7 & 0.6 & 100.6 \\
+Global discrete benchmark (exact) & 2495.0 & 0.0 & 7.2 & 0.0 & -- \\
+OccBin + bootstrap PF & 2199.4 & 8.9 & 102.0 & 1.3 & 27.6 \\
+PPPF-mixture + RBPF & 2130.0 & 0.5 & 185.7 & 3.6 & 183.6 \\
 \bottomrule
 \end{tabular}
-\caption{NK--ELB benchmark (reference implementation): likelihood variability across $R=30$ repeated particle-filter runs on fixed data, with $T=250$ and $N=256$ particles.}
+\caption{NK--ELB benchmark (reference implementation): likelihood variability across $R=30$ repeated particle-filter runs on fixed data, with $T=250$ and $N=256$ particles. The ``global discrete benchmark'' is exact for the discretized model.}
 \label{tab:nk_summary}
 \end{table}
 
