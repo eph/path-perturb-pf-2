@@ -1,0 +1,28 @@
+% Vector replacement for ../pppf-mixture-rbpf/output/burnside/irf_1.png
+% Data source: ../pppf-mixture-rbpf/output/burnside/irf_1.csv
+
+\begin{tikzpicture}
+\begin{axis}[
+  tick align=outside,
+  tick pos=left,
+  axis line style={draw=pppfGray},
+  tick style={draw=pppfGray},
+  grid=both,
+  grid style={line width=0.15pt, draw=pppfGray!18},
+  major grid style={line width=0.25pt, draw=pppfGray!28},
+  label style={font=\small},
+  ticklabel style={font=\small},
+  title style={font=\small},
+  legend style={font=\small, draw=none, fill=none, cells={anchor=west}},
+  width=0.78\linewidth,
+  height=0.42\linewidth,
+  xlabel={$t$},
+  ylabel={Continuation value},
+  legend pos=south east,
+]
+  \addplot+[line width=0.9pt, color=pppfBlack] table [col sep=comma, x=t, y=v_exact] {../pppf-mixture-rbpf/output/burnside/irf_1.csv};
+  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table [col sep=comma, x=t, y=v_ce] {../pppf-mixture-rbpf/output/burnside/irf_1.csv};
+  \addplot+[line width=0.9pt, color=pppfBlue] table [col sep=comma, x=t, y=v_ut] {../pppf-mixture-rbpf/output/burnside/irf_1.csv};
+  \legend{Exact, CE, UT}
+\end{axis}
+\end{tikzpicture}

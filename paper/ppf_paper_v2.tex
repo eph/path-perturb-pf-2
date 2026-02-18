@@ -8,6 +8,21 @@
 \usepackage{hyperref}
 \usepackage{natbib}
 \usepackage{graphicx}
+% Vector figures
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\usepgfplotslibrary{groupplots}
+\usepgfplotslibrary{statistics}
+\pgfplotsset{compat=1.18}
+
+% Publication-quality pgfplots styling (macros, to avoid pgfkeys style-definition edge cases).
+\definecolor{pppfBlack}{HTML}{111111}
+\definecolor{pppfBlue}{HTML}{0072B2}
+\definecolor{pppfOrange}{HTML}{D55E00}
+\definecolor{pppfGreen}{HTML}{009E73}
+\definecolor{pppfGray}{HTML}{666666}
 
 \hypersetup{
   colorlinks=true,
@@ -553,6 +568,19 @@ We solve the discretized global benchmark (Tauchen grid) and simulate a dataset 
 For likelihood evaluation we use $N=256$ particles and repeat each filter run $R=30$ times with different random seeds to measure Monte Carlo variability.
 All artifacts (CSV + plots) are written under \texttt{pppf-mixture-rbpf/output/}.
 
+\paragraph{Exact likelihood for the discretized global benchmark (HMM forward algorithm).}
+The discretized global benchmark used in this experiment induces a finite-state hidden Markov model (HMM) for the exogenous state.
+Let $s_t\in\{1,\ldots,S\}$ index the Tauchen grid point for $(r_t^n,\nu_t)$ and let $P\in\R^{S\times S}$ be the resulting transition matrix.
+Solving the discretized global model delivers an expectation-consistent mapping from each grid point to observables $g(s)=(\pi(s),x(s),i(s))^\top$.
+With Gaussian measurement noise, $y_t\mid s_t \sim \mathcal{N}(g(s_t),R)$, the log-likelihood of the discretized benchmark can be computed exactly by the standard forward recursion:
+\[
+\alpha_{t|t-1}(s')=\sum_{s=1}^S \alpha_{t-1}(s)\,P(s,s'),\qquad
+\tilde \alpha_t(s)=\alpha_{t|t-1}(s)\,p(y_t\mid s),\qquad
+z_t=\sum_{s=1}^S \tilde \alpha_t(s),
+\]
+with $\alpha_t(s)=\tilde \alpha_t(s)/z_t$ and $\log p(y_{1:T})=\sum_{t=1}^T \log z_t$.
+This likelihood is exact for the \emph{discretized benchmark} (grid + global policy functions), not for the underlying continuous-state DSGE.
+
 \subsection{Illustrative results}
 
 We begin with an analytic Jensen-style validation based on Burnside's recursion, where an exact benchmark is available.
@@ -561,7 +589,7 @@ The UT approximation tracks curvature effects better than certainty equivalence,
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.78\linewidth]{../pppf-mixture-rbpf/output/burnside/irf_1.png}
+\input{fig_burnside_irf.tex}
 \caption{Burnside recursion validation (reference implementation): exact benchmark versus certainty equivalence (CE) and unscented-transform (UT) quadrature.}
 \label{fig:burnside_irf}
 \end{figure}
@@ -572,7 +600,7 @@ A bootstrap particle filter, which replaces analytic Gaussian integration with M
 
 We then turn to the NK--ELB benchmark.
 Table~\ref{tab:nk_summary} reports summary statistics from the reference implementation.
-We simulate data from the discretized global benchmark and compute its (exact) likelihood by a forward algorithm on the discrete Markov chain.
+We simulate data from the discretized global benchmark and compute its exact likelihood by the HMM forward algorithm described above.
 Relative to OccBin + bootstrap PF, the PPPF-mixture-RBPF delivers much higher ESS and substantially lower Monte Carlo variability of the likelihood estimator, consistent with the variance-reduction role of Rao--Blackwellization.
 We also report a PLC-style baseline obtained by interpolating the global (discretized) benchmark policies on the $(r^n,\nu)$ grid and filtering only the exogenous states with a conditionally informed proposal based on local linearization; this provides a practical point of contact with the PLC/COPF perspective of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} while keeping the implementation minimal.
 The tradeoffs are transparent: Rao--Blackwellization and observation-informed proposals can dramatically reduce Monte Carlo variance (high ESS, low SD across repeated runs), but approximation bias remains whenever the transition kernel used by the likelihood evaluator deviates from the data-generating benchmark (finite-horizon truncation, local linearization, low-dimensional anticipated-shock objects, or grid discretization).
@@ -594,26 +622,20 @@ PLC (interp) + COPF-style PF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
 \end{table}
 
 Figure~\ref{fig:nk_irf} reports impulse responses near the ELB kink, comparing OccBin and PPPF to a discretized global stochastic benchmark (expectation-consistent equilibrium on a Tauchen grid).
-In this configuration, OccBin tracks the global benchmark more closely than PPPF in IRF RMSE, while PPPF remains faster and exhibits higher ESS in likelihood evaluation.
+In this configuration, OccBin tracks the global benchmark more closely than PPPF in IRF RMSE, while PPPF exhibits substantially higher ESS (hence lower Monte Carlo variability) in likelihood evaluation.
+The lower PPPF likelihood relative to OccBin in Table~\ref{tab:nk_summary} reflects approximation bias rather than particle-filter variance: PPPF is evaluating a different approximate kernel, and in the current prototype the anticipated-shock proxy and local linearization are not yet rich enough to match the discretized global benchmark in this calibration.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.92\linewidth]{../pppf-mixture-rbpf/output/nk/irf.png}
+\input{fig_nk_irf.tex}
 \caption{NK--ELB impulse responses (reference implementation): discretized global benchmark versus OccBin and PPPF-mixture approximations.}
 \label{fig:nk_irf}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\begin{minipage}{0.49\linewidth}
-\centering
-\includegraphics[width=\linewidth]{../pppf-mixture-rbpf/output/nk/loglik_hist.png}
-\end{minipage}
-\begin{minipage}{0.49\linewidth}
-\centering
-\includegraphics[width=\linewidth]{../pppf-mixture-rbpf/output/nk/ess.png}
-\end{minipage}
-\caption{NK--ELB benchmark diagnostics (reference implementation): histogram of repeated log-likelihood estimates and ESS profile over time.}
+\input{fig_nk_diag.tex}
+\caption{NK--ELB benchmark diagnostics (reference implementation): distribution of repeated log-likelihood estimates (boxplots) and ESS profile over time.}
 \label{fig:nk_diag}
 \end{figure}
 

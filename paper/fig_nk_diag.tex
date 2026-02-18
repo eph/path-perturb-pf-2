@@ -1,0 +1,100 @@
+% Vector replacement for:
+%   ../pppf-mixture-rbpf/output/nk/loglik_hist.png
+%   ../pppf-mixture-rbpf/output/nk/ess.png
+% Data sources:
+%   ../pppf-mixture-rbpf/output/nk/loglik_repeats.csv
+%   ../pppf-mixture-rbpf/output/nk/ess.csv
+
+\newcommand{\PPPFKeepMethodRow}[1]{%
+  \edef\PPPFMethodWanted{#1}%
+  \ifnum\pdfstrcmp{\thisrow{method}}{\PPPFMethodWanted}=0\relax
+  \else
+    \pgfplotstableskiprow
+  \fi
+}
+
+\begin{tikzpicture}
+\begin{groupplot}[
+  group style={group size=2 by 1, horizontal sep=1.6em},
+  tick align=outside,
+  tick pos=left,
+  axis line style={draw=pppfGray},
+  tick style={draw=pppfGray},
+  grid=both,
+  grid style={line width=0.15pt, draw=pppfGray!18},
+  major grid style={line width=0.25pt, draw=pppfGray!28},
+  label style={font=\small},
+  ticklabel style={font=\small},
+  title style={font=\small},
+  legend style={font=\small, draw=none, fill=none, cells={anchor=west}},
+  width=0.49\linewidth,
+  height=0.44\linewidth,
+]
+
+% (Left) repeated log-likelihood distribution across R=30 runs
+\nextgroupplot[
+  ylabel={Log-likelihood},
+  xtick={1,2,3},
+  xticklabels={OccBin+PF, PPPF-RBPF, PLC+PF},
+  x tick label style={rotate=20, anchor=east},
+]
+  \addplot+[
+    boxplot,
+    line width=0.9pt,
+    color=pppfOrange,
+    boxplot/draw position=1,
+  ] table[
+    col sep=comma,
+    y=loglik,
+    row predicate/.code={\PPPFKeepMethodRow{occbin_bootstrap_pf}},
+  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+
+  \addplot+[
+    boxplot,
+    line width=0.9pt,
+    color=pppfBlue,
+    boxplot/draw position=2,
+  ] table[
+    col sep=comma,
+    y=loglik,
+    row predicate/.code={\PPPFKeepMethodRow{pppf_mixture_rbpf}},
+  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+
+  \addplot+[
+    boxplot,
+    line width=0.9pt,
+    color=pppfGreen,
+    boxplot/draw position=3,
+  ] table[
+    col sep=comma,
+    y=loglik,
+    row predicate/.code={\PPPFKeepMethodRow{plc_copf_pf}},
+  ] {../pppf-mixture-rbpf/output/nk/loglik_repeats.csv};
+
+% (Right) ESS over time
+\nextgroupplot[
+  xlabel={$t$},
+  ylabel={ESS},
+  xmin=0,
+  xmax=249,
+  legend pos=south west,
+]
+  \addplot+[line width=0.9pt, color=pppfOrange, dash pattern=on 3pt off 2pt] table[
+    col sep=comma,
+    x=t, y=ess,
+    row predicate/.code={\PPPFKeepMethodRow{occbin_bootstrap_pf}},
+  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  \addplot+[line width=0.9pt, color=pppfBlue] table[
+    col sep=comma,
+    x=t, y=ess,
+    row predicate/.code={\PPPFKeepMethodRow{pppf_mixture_rbpf}},
+  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  \addplot+[line width=0.9pt, color=pppfGreen, dash pattern=on 1pt off 2pt] table[
+    col sep=comma,
+    x=t, y=ess,
+    row predicate/.code={\PPPFKeepMethodRow{plc_copf_pf}},
+  ] {../pppf-mixture-rbpf/output/nk/ess.csv};
+  \legend{OccBin, PPPF, PLC}
+
+\end{groupplot}
+\end{tikzpicture}
