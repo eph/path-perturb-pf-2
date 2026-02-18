@@ -19,3 +19,9 @@ add_executable(nk_compare
 )
 target_include_directories(nk_compare PRIVATE include)
 target_link_libraries(nk_compare PRIVATE Eigen3::Eigen)
+
+add_executable(linear_gaussian_validate
+  src/linear_gaussian_validate.cpp
+)
+target_include_directories(linear_gaussian_validate PRIVATE include)
+target_link_libraries(linear_gaussian_validate PRIVATE Eigen3::Eigen)
