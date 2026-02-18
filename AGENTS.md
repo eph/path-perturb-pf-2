@@ -76,3 +76,70 @@ bd sync               # Sync with git
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 
+## Writing Standards for Academic LaTeX Prose
+
+Objective
+
+Rewrite and edit the paper to meet the standards of a top-field macroeconomics journal. The prose must be:
+- formal, precise, and conceptually coherent,
+- written in full paragraphs (not lists or fragments),
+- mathematically disciplined and logically progressive,
+- free of implementation chatter (no references to folders, scripts, output directories, file paths, CSV artifacts, or internal code structure),
+- structured so that definitions precede use and claims are motivated before stated.
+
+The paper must read as a unified theoretical contribution, not as a technical note or software documentation.
+
+### Global Writing Principles
+
+1) Prose over bullet lists
+- Convert enumerated lists of “contributions,” “steps,” or “metrics” into flowing academic prose unless a list is absolutely necessary for clarity (e.g., assumptions).
+- Avoid sentence fragments such as “A practitioner-oriented algorithm.” or “Nonnegative weights for probability mixtures.” Use complete paragraphs with motivation and transitions.
+
+2) Eliminate implementation tone
+- Remove or rewrite references to code directories, CSV files, output folders, filenames, and “how to run” style instructions.
+- Abstract implementation discussion into methodological description (e.g., “a reference implementation” rather than naming file paths).
+
+3) Maintain academic cohesion
+Each section should follow: (i) motivation, (ii) formal development, (iii) interpretation. Do not introduce equations or objects without stating:
+- what is conditioned on,
+- what is random versus a numerical device,
+- how the object enters likelihood evaluation.
+
+4) Tone and register
+- Prefer restrained theoretical language (“We show…”, “It follows…”, “Under Assumption…”, “This implies…”).
+- Avoid casual phrasing (“In practice…”, “key practical point…”), promotional language, and self-referential “we provide code” statements.
+
+5) Mathematical exposition standards
+- For key equations: state conditioning, randomness, dimensions when ambiguous, and avoid symbol reuse.
+- For approximations: state what is exact, what is approximate, where bias enters, and what converges to what.
+- For convergence: state mode of convergence and metric.
+
+6) Remove redundancy and repetition
+- Do not restate the same claim across multiple sections unless new content is added.
+
+7) Improve transitions
+- Make the progression explicit: conditional linearization ⇒ mixture kernel ⇒ RBPF ⇒ localization ⇒ error decomposition ⇒ benchmarks.
+
+8) Clarify contribution positioning
+- In the introduction and conclusion, articulate the conceptual novelty relative to EP/SEP, dynamic perturbation, OccBin, and PLC/COPF without sounding like a survey.
+
+9) Figures and tables
+- Describe and interpret figures/tables in full sentences and economic terms.
+- Avoid “sanity check” framing; use “verification exercise” or “benchmark comparison”.
+
+10) Abstract and conclusion refinement
+- Abstract: concise contribution statement; clearly distinguish approximation bias vs Monte Carlo variance; avoid component lists and informal descriptors.
+- Conclusion: summarize conceptual contributions and limitations; identify open theoretical/computational challenges; avoid implementation commentary.
+
+### Section-Level Editing Tasks
+- Replace fragmentary headings with integrated exposition.
+- Convert algorithm summaries into formal descriptions with minimal procedural tone.
+- Remove references to directories, output artifacts, or internal code structure.
+- Tie each approximation step to the kernel-error decomposition.
+- Ensure the NK–ELB benchmark reads as a scientific comparison, not an experiment log.
+
+### Consistency Checklist
+- No file paths, folders, CSV references, or output artifacts.
+- No sentence fragments.
+- No duplicated notation or implicit conditioning.
+- All auxiliary variables and mixture weights are defined consistently with their probabilistic interpretation.
