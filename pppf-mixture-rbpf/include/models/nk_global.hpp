@@ -307,6 +307,64 @@ inline Eigen::VectorXd initial_distribution_bilinear(const NkGlobalGrid& g, doub
   return d;
 }
 
+struct BilinearCell {
+  int i = 0;
+  int j = 0;
+  double w00 = 1.0;
+  double w10 = 0.0;
+  double w01 = 0.0;
+  double w11 = 0.0;
+};
+
+inline BilinearCell bilinear_cell(const NkGlobalGrid& g, double r0, double nu0) {
+  if (g.r_grid.size() < 2 || g.nu_grid.size() < 2) throw std::invalid_argument("bilinear_cell: grid too small");
+  auto clamp = [](double v, double lo, double hi) { return std::max(lo, std::min(hi, v)); };
+  const double r = clamp(r0, g.r_grid.front(), g.r_grid.back());
+  const double nu = clamp(nu0, g.nu_grid.front(), g.nu_grid.back());
+
+  auto lower = [](const std::vector<double>& grid, double v) {
+    auto it = std::lower_bound(grid.begin(), grid.end(), v);
+    if (it == grid.begin()) return 0;
+    if (it == grid.end()) return static_cast<int>(grid.size()) - 2;
+    return static_cast<int>(std::distance(grid.begin(), it)) - 1;
+  };
+
+  BilinearCell c;
+  c.i = lower(g.r_grid, r);
+  c.j = lower(g.nu_grid, nu);
+  const double r0g = g.r_grid[c.i];
+  const double r1g = g.r_grid[c.i + 1];
+  const double nu0g = g.nu_grid[c.j];
+  const double nu1g = g.nu_grid[c.j + 1];
+  const double tr = (r1g == r0g) ? 0.0 : (r - r0g) / (r1g - r0g);
+  const double tnu = (nu1g == nu0g) ? 0.0 : (nu - nu0g) / (nu1g - nu0g);
+
+  c.w00 = (1.0 - tr) * (1.0 - tnu);
+  c.w10 = tr * (1.0 - tnu);
+  c.w01 = (1.0 - tr) * tnu;
+  c.w11 = tr * tnu;
+  return c;
+}
+
+inline double bilinear_interp(const NkGlobalGrid& g, const Eigen::MatrixXd& field, double r, double nu) {
+  const BilinearCell c = bilinear_cell(g, r, nu);
+  const int i = c.i;
+  const int j = c.j;
+  return c.w00 * field(i, j) + c.w10 * field(i + 1, j) + c.w01 * field(i, j + 1) +
+         c.w11 * field(i + 1, j + 1);
+}
+
+inline Eigen::Vector3d nk_observables_plc(const NkParams& p, const NkGlobalGrid& g, double r, double nu) {
+  // PLC-style interpolation of the global discrete benchmark policies.
+  const double x = bilinear_interp(g, g.x, r, nu);
+  const double pi = bilinear_interp(g, g.pi, r, nu);
+  double i = bilinear_interp(g, g.i, r, nu);
+  i = std::max(p.i_lower, i);
+  Eigen::Vector3d y;
+  y << pi, x, i;
+  return y;
+}
+
 inline void expected_irf_global(const NkParams& p, const NkGlobalGrid& g, double shock_eps_r, int T,
                                 std::vector<double>* x_out, std::vector<double>* pi_out,
                                 std::vector<double>* i_out) {

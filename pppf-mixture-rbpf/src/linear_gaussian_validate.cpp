@@ -1,6 +1,8 @@
+#include "filters/bootstrap_pf.hpp"
 #include "filters/rbpf.hpp"
 #include "statespace/linear_gaussian.hpp"
 #include "util/rng.hpp"
+#include "util/stats.hpp"
 
 #include <Eigen/Dense>
 
@@ -102,6 +104,29 @@ int main() {
       return 1;
     }
 
+    // Bootstrap PF sanity check (not exact, but should be close with enough particles).
+    {
+      util::Rng rng_bpf(20260220ULL);
+      const int Nbpf = 4096;
+      Eigen::MatrixXd P0_sqrt(1, 1);
+      P0_sqrt(0, 0) = std::sqrt(cov0(0, 0));
+
+      const auto transition = [&](Eigen::VectorXd* state, util::Rng& rin, int /*t*/) {
+        const double eta = std::sqrt(q) * rin.normal();
+        (*state)(0) = a * (*state)(0) + eta;
+      };
+      const auto log_obs = [&](const Eigen::VectorXd& state, const Eigen::VectorXd& y_t, int /*t*/) {
+        Eigen::VectorXd yhat(1);
+        yhat(0) = h * state(0);
+        return util::log_mvnorm_pdf(y_t, yhat, R);
+      };
+
+      const filters::PfDiagnostics bpf =
+          filters::bootstrap_pf(Nbpf, mean0, P0_sqrt, y, transition, log_obs, rng_bpf, 0.5);
+      std::cout << "Bootstrap PF loglik (N=" << Nbpf << "): " << bpf.loglik << "\n";
+      std::cout << "Bootstrap PF abs diff vs KF: " << std::abs(bpf.loglik - ll_kf) << "\n";
+    }
+
     std::cout << "linear_gaussian_validate: PASS\n";
     return 0;
   } catch (const std::exception& e) {
@@ -109,4 +134,3 @@ int main() {
     return 1;
   }
 }
-

@@ -118,18 +118,24 @@ def main():
         axes[0].plot(t, irf["x_global"], label="Global (Markov)", linewidth=2, color="black")
         axes[0].plot(t, irf["x_occbin"], label="OccBin", linewidth=2)
         axes[0].plot(t, irf["x_pppf"], label="PPPF-mixture mean", linestyle="--")
+        if "x_plc" in irf:
+            axes[0].plot(t, irf["x_plc"], label="PLC (interp)", linestyle=":")
         axes[0].set_ylabel("x")
         axes[0].grid(True, alpha=0.3)
 
         axes[1].plot(t, irf["pi_global"], label="Global (Markov)", linewidth=2, color="black")
         axes[1].plot(t, irf["pi_occbin"], label="OccBin", linewidth=2)
         axes[1].plot(t, irf["pi_pppf"], label="PPPF-mixture mean", linestyle="--")
+        if "pi_plc" in irf:
+            axes[1].plot(t, irf["pi_plc"], label="PLC (interp)", linestyle=":")
         axes[1].set_ylabel("pi")
         axes[1].grid(True, alpha=0.3)
 
         axes[2].plot(t, irf["i_global"], label="Global (Markov)", linewidth=2, color="black")
         axes[2].plot(t, irf["i_occbin"], label="OccBin", linewidth=2)
         axes[2].plot(t, irf["i_pppf"], label="PPPF-mixture mean", linestyle="--")
+        if "i_plc" in irf:
+            axes[2].plot(t, irf["i_plc"], label="PLC (interp)", linestyle=":")
         axes[2].set_ylabel("i")
         axes[2].set_xlabel("t")
         axes[2].grid(True, alpha=0.3)
@@ -144,9 +150,33 @@ def main():
             png,
             t,
             [
-                ("x", {"Global": irf["x_global"], "OccBin": irf["x_occbin"], "PPPF": irf["x_pppf"]}),
-                ("pi", {"Global": irf["pi_global"], "OccBin": irf["pi_occbin"], "PPPF": irf["pi_pppf"]}),
-                ("i", {"Global": irf["i_global"], "OccBin": irf["i_occbin"], "PPPF": irf["i_pppf"]}),
+                (
+                    "x",
+                    {
+                        "Global": irf["x_global"],
+                        "OccBin": irf["x_occbin"],
+                        "PPPF": irf["x_pppf"],
+                        "PLC": irf.get("x_plc", irf["x_global"]),
+                    },
+                ),
+                (
+                    "pi",
+                    {
+                        "Global": irf["pi_global"],
+                        "OccBin": irf["pi_occbin"],
+                        "PPPF": irf["pi_pppf"],
+                        "PLC": irf.get("pi_plc", irf["pi_global"]),
+                    },
+                ),
+                (
+                    "i",
+                    {
+                        "Global": irf["i_global"],
+                        "OccBin": irf["i_occbin"],
+                        "PPPF": irf["i_pppf"],
+                        "PLC": irf.get("i_plc", irf["i_global"]),
+                    },
+                ),
             ],
             title="NK IRF near ELB (negative r^n shock)",
         )

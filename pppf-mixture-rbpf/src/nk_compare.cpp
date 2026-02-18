@@ -27,6 +27,123 @@ struct RunResult {
   std::vector<double> ess;
 };
 
+RunResult run_plc_copf_pf(const models::NkParams& p, const models::NkGlobalGrid& grid, int N,
+                          const Eigen::Vector2d& mean0, const Eigen::Matrix2d& cov0,
+                          const std::vector<Eigen::VectorXd>& y, const Eigen::Matrix3d& R,
+                          std::uint64_t seed) {
+  util::Rng rng(seed);
+  util::Timer timer;
+
+  struct Particle {
+    Eigen::Vector2d s;  // [r, nu]
+  };
+
+  const Eigen::Matrix2d A = (Eigen::Matrix2d() << p.rho_r, 0.0, 0.0, p.rho_nu).finished();
+  const Eigen::Matrix2d Q = (Eigen::Matrix2d() << p.sigma_r * p.sigma_r, 0.0, 0.0,
+                         p.sigma_nu * p.sigma_nu)
+                                .finished();
+
+  const Eigen::Matrix2d P0_sqrt = cov0.llt().matrixL();
+
+  std::vector<Particle> particles(N);
+  for (int i = 0; i < N; ++i) {
+    particles[i].s = mean0 + P0_sqrt * rng.normal_vec(2);
+  }
+  Eigen::VectorXd logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+
+  RunResult res;
+  res.ess.reserve(static_cast<int>(y.size()));
+
+  auto yhat = [&](const Eigen::Vector2d& s) {
+    return models::nk_observables_plc(p, grid, s(0), s(1));
+  };
+
+  auto jac_yhat = [&](const Eigen::Vector2d& s) {
+    const double h = 1e-5;
+    Eigen::Matrix<double, 3, 2> J;
+    const Eigen::Vector3d f0 = yhat(s);
+    (void)f0;
+    for (int j = 0; j < 2; ++j) {
+      Eigen::Vector2d sp = s;
+      Eigen::Vector2d sm = s;
+      sp(j) += h;
+      sm(j) -= h;
+      const Eigen::Vector3d fp = yhat(sp);
+      const Eigen::Vector3d fm = yhat(sm);
+      J.col(j) = (fp - fm) / (2.0 * h);
+    }
+    return J;
+  };
+
+  for (int t = 0; t < static_cast<int>(y.size()); ++t) {
+    Eigen::VectorXd logw_new(N);
+    for (int i = 0; i < N; ++i) {
+      const Eigen::Vector2d s_prev = particles[i].s;
+      const Eigen::Vector2d m = A * s_prev;
+      const Eigen::Matrix2d P = Q;
+
+      // EKF-style proposal q(s_t | s_{t-1}, y_t) for conditionally-informed sampling.
+      const Eigen::Vector3d y_m = yhat(m);
+      const Eigen::Matrix<double, 3, 2> H = jac_yhat(m);
+      Eigen::Matrix3d S = H * P * H.transpose() + R;
+
+      Eigen::LLT<Eigen::Matrix3d> llt(S);
+      if (llt.info() != Eigen::Success) {
+        S += 1e-12 * Eigen::Matrix3d::Identity();
+        llt.compute(S);
+        if (llt.info() != Eigen::Success) throw std::runtime_error("plc_copf_pf: S not PD");
+      }
+      const Eigen::Matrix<double, 2, 3> K =
+          P * H.transpose() * llt.solve(Eigen::Matrix3d::Identity());
+      const Eigen::Vector2d m_post = m + K * (y[t] - y_m);
+      const Eigen::Matrix2d P_post =
+          (Eigen::Matrix2d::Identity() - K * H) * P * (Eigen::Matrix2d::Identity() - K * H).transpose() +
+          K * R * K.transpose();
+
+      Eigen::LLT<Eigen::Matrix2d> lltP(P_post);
+      Eigen::Matrix2d L = Eigen::Matrix2d::Zero();
+      if (lltP.info() == Eigen::Success) {
+        L = lltP.matrixL();
+      } else {
+        const Eigen::Matrix2d Pj = P_post + 1e-12 * Eigen::Matrix2d::Identity();
+        lltP.compute(Pj);
+        if (lltP.info() != Eigen::Success) throw std::runtime_error("plc_copf_pf: P_post not PD");
+        L = lltP.matrixL();
+      }
+
+      const Eigen::Vector2d s_t = m_post + L * rng.normal_vec(2);
+      particles[i].s = s_t;
+
+      const Eigen::Vector3d y_s = yhat(s_t);
+      const double ll = util::log_mvnorm_pdf(y[t], y_s, R);
+
+      const double log_prior = util::log_mvnorm_pdf(s_t, m, Q);
+      const double log_prop = util::log_mvnorm_pdf(s_t, m_post, P_post);
+      logw_new(i) = logw(i) + ll + log_prior - log_prop;
+    }
+
+    const double logZ = util::log_sum_exp(logw_new);
+    res.loglik += logZ;
+    logw_new.array() -= logZ;
+    const double ess_t = util::ess_from_logw(logw_new);
+    res.ess.push_back(ess_t);
+
+    if (ess_t < 0.5 * static_cast<double>(N)) {
+      const Eigen::VectorXd w_norm = logw_new.array().exp().matrix();
+      const std::vector<int> idx = filters::systematic_resample(w_norm, rng);
+      std::vector<Particle> new_particles(N);
+      for (int i = 0; i < N; ++i) new_particles[i] = particles[idx[i]];
+      particles.swap(new_particles);
+      logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+    } else {
+      logw = logw_new;
+    }
+  }
+
+  res.runtime_ms = timer.elapsed_ms();
+  return res;
+}
+
 RunResult run_occbin_bootstrap_pf(const models::NkParams& p, int N, const Eigen::Vector4d& mean0,
                                   const Eigen::Matrix4d& cov0,
                                   const std::vector<Eigen::VectorXd>& y,
@@ -257,7 +374,8 @@ int main() {
     std::map<std::string, std::vector<double>> rt_by_method;
     std::map<std::string, double> mean_ess_by_method;
 
-    for (const std::string& method : {"occbin_bootstrap_pf", "pppf_mixture_rbpf", "global_discrete_exact"}) {
+    for (const std::string& method :
+         {"occbin_bootstrap_pf", "pppf_mixture_rbpf", "plc_copf_pf", "global_discrete_exact"}) {
       loglik_by_method[method] = {};
       rt_by_method[method] = {};
     }
@@ -333,6 +451,26 @@ int main() {
           mean_ess_by_method["pppf_mixture_rbpf"] = ess_mean;
         }
       }
+
+      {
+        const Eigen::Vector2d s_mean0 = Eigen::Vector2d::Zero();
+        const Eigen::Matrix2d s_cov0 =
+            (Eigen::Matrix2d() << 0.05 * 0.05, 0.0, 0.0, 0.05 * 0.05).finished();
+        const RunResult rr = run_plc_copf_pf(p, grid, N, s_mean0, s_cov0, y_obs, Rm, seed_base + 3);
+        loglik_by_method["plc_copf_pf"].push_back(rr.loglik);
+        rt_by_method["plc_copf_pf"].push_back(rr.runtime_ms);
+        util::write_csv_row(ll_out, "plc_copf_pf", rep, rr.loglik, rr.runtime_ms);
+
+        if (rep == 0) {
+          double ess_mean = 0.0;
+          for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
+            util::write_csv_row(ess_out, "plc_copf_pf", t, rr.ess[t]);
+            ess_mean += rr.ess[t];
+          }
+          ess_mean /= static_cast<double>(rr.ess.size());
+          mean_ess_by_method["plc_copf_pf"] = ess_mean;
+        }
+      }
     }
 
     write_summary_json(out_dir / "summary.json", loglik_by_method, rt_by_method, mean_ess_by_method,
@@ -350,6 +488,7 @@ int main() {
     std::vector<double> irf_x_occ(Tirf), irf_pi_occ(Tirf), irf_i_occ(Tirf);
     std::vector<double> irf_x_pppf(Tirf), irf_pi_pppf(Tirf), irf_i_pppf(Tirf);
     std::vector<double> irf_x_glob(Tirf), irf_pi_glob(Tirf), irf_i_glob(Tirf);
+    std::vector<double> irf_x_plc(Tirf), irf_pi_plc(Tirf), irf_i_plc(Tirf);
 
     double r_prev = 0.0;
     double nu_prev = 0.0;
@@ -417,16 +556,30 @@ int main() {
     // Global stochastic solution on a discrete Markov chain (state-space, expectation-consistent).
     models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
 
+    // PLC interpolation IRF: propagate mean exogenous state under the impulse and map to observables.
+    double r_m = 0.0;
+    double nu_m = 0.0;
+    for (int t = 0; t < Tirf; ++t) {
+      const double eps_r = (t == 0) ? shock_eps_r : 0.0;
+      const double eps_nu = 0.0;
+      r_m = p.rho_r * r_m + p.sigma_r * eps_r;
+      nu_m = p.rho_nu * nu_m + p.sigma_nu * eps_nu;
+      const Eigen::Vector3d yplc = models::nk_observables_plc(p, grid, r_m, nu_m);
+      irf_pi_plc[t] = yplc(0);
+      irf_x_plc[t] = yplc(1);
+      irf_i_plc[t] = yplc(2);
+    }
+
     const std::filesystem::path irf_csv = out_dir / "irf.csv";
     std::ofstream irf_out(irf_csv);
     if (!irf_out) throw std::runtime_error("failed to open: " + irf_csv.string());
     util::write_csv_header(
         irf_out, {"t", "x_global", "pi_global", "i_global", "x_occbin", "pi_occbin", "i_occbin",
-                  "x_pppf", "pi_pppf", "i_pppf"});
+                  "x_pppf", "pi_pppf", "i_pppf", "x_plc", "pi_plc", "i_plc"});
     for (int t = 0; t < Tirf; ++t) {
       util::write_csv_row(irf_out, t, irf_x_glob[t], irf_pi_glob[t], irf_i_glob[t], irf_x_occ[t],
                           irf_pi_occ[t], irf_i_occ[t], irf_x_pppf[t], irf_pi_pppf[t],
-                          irf_i_pppf[t]);
+                          irf_i_pppf[t], irf_x_plc[t], irf_pi_plc[t], irf_i_plc[t]);
     }
     std::cout << "Wrote " << irf_csv.string() << "\n";
 

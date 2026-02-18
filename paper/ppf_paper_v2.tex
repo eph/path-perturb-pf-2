@@ -521,6 +521,7 @@ Likelihood evaluation can be done by a bootstrap particle filter, and several pa
 
 \item \textbf{Piecewise-linear continuous (PLC) decision rules + COPF.}
 \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} construct globally piecewise-linear and continuous decision rules for OBC models and derive a \emph{conditionally optimal} particle filter (COPF) that exploits the piecewise-linear structure to reduce likelihood variance.
+In our reference implementation we include a PLC-style baseline by interpolating a discretized global benchmark decision rule and using a conditionally informed (local-linearization) proposal for the exogenous states; this is intended as a computationally lightweight proxy for the PLC/COPF logic.
 
 \item \textbf{PPPF with anticipated-shock quadrature and regime localization.}
 In the PPPF approach, we treat the ELB binding pattern over the EP horizon as part of the localization index $s_t$ and integrate over short-horizon anticipated shocks $\omega_t$ by sigma points/quadrature.
@@ -565,11 +566,16 @@ The UT approximation tracks curvature effects better than certainty equivalence,
 \label{fig:burnside_irf}
 \end{figure}
 
+As an additional sanity check in a setting where all methods should agree, we validate the filtering layer on a one-dimensional linear-Gaussian state-space model with known Kalman-filter likelihood.
+In that case, an RBPF with a single mixture component ($K=1$) coincides with the Kalman filter and matches the exact log-likelihood to machine precision.
+A bootstrap particle filter, which replaces analytic Gaussian integration with Monte Carlo integration, approaches the same likelihood as the particle count increases.
+
 We then turn to the NK--ELB benchmark.
 Table~\ref{tab:nk_summary} reports summary statistics from the reference implementation.
 We simulate data from the discretized global benchmark and compute its (exact) likelihood by a forward algorithm on the discrete Markov chain.
 Relative to OccBin + bootstrap PF, the PPPF-mixture-RBPF delivers much higher ESS and substantially lower Monte Carlo variability of the likelihood estimator, consistent with the variance-reduction role of Rao--Blackwellization.
-The tradeoff is higher runtime per likelihood evaluation and (in this configuration) a larger approximation bias relative to the global discrete benchmark.
+We also report a PLC-style baseline obtained by interpolating the global (discretized) benchmark policies on the $(r^n,\nu)$ grid and filtering only the exogenous states with a conditionally informed proposal based on local linearization; this provides a practical point of contact with the PLC/COPF perspective of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} while keeping the implementation minimal.
+The tradeoffs are transparent: Rao--Blackwellization and observation-informed proposals can dramatically reduce Monte Carlo variance (high ESS, low SD across repeated runs), but approximation bias remains whenever the transition kernel used by the likelihood evaluator deviates from the data-generating benchmark (finite-horizon truncation, local linearization, low-dimensional anticipated-shock objects, or grid discretization).
 
 \begin{table}[t]
 \centering
@@ -580,6 +586,7 @@ Method & Mean loglik & SD loglik & Mean runtime (ms) & SD runtime (ms) & Mean ES
 Global discrete benchmark (exact) & 2495.0 & 0.0 & 7.2 & 0.0 & -- \\
 OccBin + bootstrap PF & 2199.4 & 8.9 & 102.0 & 1.3 & 27.6 \\
 PPPF-mixture + RBPF & 2130.0 & 0.5 & 185.7 & 3.6 & 183.6 \\
+PLC (interp) + COPF-style PF & 2415.3 & 3.4 & 40.7 & 1.9 & 135.4 \\
 \bottomrule
 \end{tabular}
 \caption{NK--ELB benchmark (reference implementation): likelihood variability across $R=30$ repeated particle-filter runs on fixed data, with $T=250$ and $N=256$ particles. The ``global discrete benchmark'' is exact for the discretized model.}
