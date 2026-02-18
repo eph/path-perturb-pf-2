@@ -135,6 +135,74 @@ inline NkPath solve_nk_occbin_path(const NkParams& p, double r0, double nu0,
   return path;
 }
 
+// Fixed-regime variant: solve the NK model for a given binding pattern.
+//
+// This is the regime-conditioned object needed for kink-aware linearization: when computing
+// Jacobians for PPPF near the ELB boundary, one can hold the binding pattern fixed and
+// differentiate the smooth mapping induced by that regime rather than differentiating through
+// the kink/selection step.
+inline NkPath solve_nk_occbin_path_given_bind(const NkParams& p, double r0, double nu0,
+                                             const std::vector<double>& eps_r,
+                                             const std::vector<double>& eps_nu,
+                                             const std::vector<int>& bind) {
+  const int H = p.horizon;
+  if (static_cast<int>(eps_r.size()) != H) throw std::invalid_argument("nk_occbin_fixed: eps_r size");
+  if (static_cast<int>(eps_nu.size()) != H) throw std::invalid_argument("nk_occbin_fixed: eps_nu size");
+  if (static_cast<int>(bind.size()) != H) throw std::invalid_argument("nk_occbin_fixed: bind size");
+  if (!(p.sigma > 0.0)) throw std::invalid_argument("nk_occbin_fixed: sigma<=0");
+
+  NkPath path;
+  path.x.assign(H + 1, 0.0);
+  path.pi.assign(H + 1, 0.0);
+  path.i.assign(H + 1, 0.0);
+  path.r.assign(H + 1, 0.0);
+  path.nu.assign(H + 1, 0.0);
+  path.bind = bind;
+
+  path.r[0] = r0;
+  path.nu[0] = nu0;
+  for (int t = 0; t < H; ++t) {
+    path.r[t + 1] = p.rho_r * path.r[t] + p.sigma_r * eps_r[t];
+    path.nu[t + 1] = p.rho_nu * path.nu[t] + p.sigma_nu * eps_nu[t];
+  }
+
+  const double inv_sigma = 1.0 / p.sigma;
+
+  path.x.assign(H + 1, 0.0);
+  path.pi.assign(H + 1, 0.0);
+  path.x[H] = 0.0;
+  path.pi[H] = 0.0;
+  for (int t = H - 1; t >= 0; --t) {
+    Eigen::Matrix2d A;
+    Eigen::Matrix2d B;
+    Eigen::Vector2d c;
+    B << -1.0, -inv_sigma, 0.0, -p.beta;
+    c << 0.0, 0.0;
+    const double r_n = p.r_ss + path.r[t];
+    if (bind[t]) {
+      A << 1.0, 0.0, -p.kappa, 1.0;
+      c(0) = inv_sigma * (p.i_lower - r_n);
+    } else {
+      A << 1.0 + inv_sigma * p.phi_x, inv_sigma * p.phi_pi, -p.kappa, 1.0;
+      c(0) = inv_sigma * (p.i_ss + path.nu[t] - r_n);
+    }
+    c(1) = 0.0;
+
+    const Eigen::Vector2d u_next(path.x[t + 1], path.pi[t + 1]);
+    const Eigen::Vector2d rhs = -(B * u_next + c);
+    const Eigen::Vector2d u = A.fullPivLu().solve(rhs);
+    path.x[t] = u(0);
+    path.pi[t] = u(1);
+  }
+
+  for (int t = 0; t < H; ++t) {
+    const double i_rule = p.i_ss + p.phi_pi * path.pi[t] + p.phi_x * path.x[t] + path.nu[t];
+    path.i[t] = bind[t] ? p.i_lower : std::max(p.i_lower, i_rule);
+  }
+  path.i[H] = p.i_ss + p.phi_pi * path.pi[H] + p.phi_x * path.x[H] + path.nu[H];
+  return path;
+}
+
 // Variant of OccBin that conditions on the time-0 binding decision (i.e., whether the ELB binds
 // at the first period of the solved path). This is useful for regime-mixture experiments near the
 // kink, where one wants to compare or mix transitions conditional on bind[0]=0 versus bind[0]=1.

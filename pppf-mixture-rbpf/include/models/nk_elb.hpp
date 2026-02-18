@@ -96,6 +96,32 @@ inline Eigen::Vector4d nk_transition_markov_anticipated_conditional_bind0(
   return z_next;
 }
 
+inline Eigen::Vector4d nk_transition_markov_anticipated_given_bind(const NkParams& p,
+                                                                   const Eigen::Vector4d& z_prev,
+                                                                   double eps_r, double eps_nu,
+                                                                   const Eigen::VectorXd& omega,
+                                                                   const std::vector<int>& bind) {
+  const double r_next = p.rho_r * z_prev(2) + p.sigma_r * eps_r;
+  const double nu_next = p.rho_nu * z_prev(3) + p.sigma_nu * eps_nu;
+
+  std::vector<double> eps_r_path(p.horizon, 0.0);
+  std::vector<double> eps_nu_path(p.horizon, 0.0);
+  if (omega.size() > 0) {
+    if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_bind: omega odd");
+    const int L = static_cast<int>(omega.size() / 2);
+    if (L > p.horizon) throw std::invalid_argument("nk_transition_bind: omega L>horizon");
+    for (int i = 0; i < L; ++i) {
+      eps_r_path[i] = omega(i);
+      eps_nu_path[i] = omega(L + i);
+    }
+  }
+
+  const NkPath path = solve_nk_occbin_path_given_bind(p, r_next, nu_next, eps_r_path, eps_nu_path, bind);
+  Eigen::Vector4d z_next;
+  z_next << path.x[0], path.pi[0], r_next, nu_next;
+  return z_next;
+}
+
 inline double nk_policy_rate(const NkParams& p, const Eigen::Vector4d& z) {
   const double i_rule = p.i_ss + p.phi_pi * z(1) + p.phi_x * z(0) + z(3);
   return std::max(p.i_lower, i_rule);
@@ -137,29 +163,36 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   // important for the "all methods coincide" no-ELB sanity check.
   if (d == 0 || omega_var == 0.0) {
     const Eigen::VectorXd omega0 = Eigen::VectorXd::Zero(d);
+    const double r_next0 = p.rho_r * z_ref(2);
+    const double nu_next0 = p.rho_nu * z_ref(3);
+    std::vector<double> eps_r_path(p.horizon, 0.0);
+    std::vector<double> eps_nu_path(p.horizon, 0.0);
+    const NkPath base_path =
+        solve_nk_occbin_path(p, r_next0, nu_next0, eps_r_path, eps_nu_path);
+    const std::vector<int> bind = base_path.bind;
+
     statespace::GaussianMixtureTransition mix;
     mix.components.resize(1);
     mix.weights = {1.0};
 
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
-      const Eigen::Vector4d z_out = nk_transition_markov_anticipated(p, z4, 0.0, 0.0, omega0);
-      return z_out;
+      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega0, bind);
     };
 
     const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
-    Eigen::Vector4d z_mean = nk_transition_markov_anticipated(p, z_ref, 0.0, 0.0, omega0);
+    Eigen::Vector4d z_mean = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega0, bind);
 
     const double h = 1e-6;
-    const Eigen::Vector4d zrp = nk_transition_markov_anticipated(p, z_ref, +h, 0.0, omega0);
-    const Eigen::Vector4d zrm = nk_transition_markov_anticipated(p, z_ref, -h, 0.0, omega0);
+    const Eigen::Vector4d zrp = nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega0, bind);
+    const Eigen::Vector4d zrm = nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega0, bind);
     const Eigen::Vector4d Br = (zrp - zrm) / (2.0 * h);
     z_mean += Br * unexpected_eps_r_mean;
 
     const Eigen::Vector4d a = z_mean - A * z_ref;
 
-    const Eigen::Vector4d znp = nk_transition_markov_anticipated(p, z_ref, 0.0, +h, omega0);
-    const Eigen::Vector4d znm = nk_transition_markov_anticipated(p, z_ref, 0.0, -h, omega0);
+    const Eigen::Vector4d znp = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega0, bind);
+    const Eigen::Vector4d znm = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega0, bind);
     const Eigen::Vector4d Bn = (znp - znm) / (2.0 * h);
 
     Eigen::Matrix4d Q =
@@ -205,47 +238,42 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
 
   auto linearize_one = [&](const Eigen::VectorXd& omega_node,
                            std::optional<int> bind0_override) -> LinTrans {
+    std::vector<double> eps_r0(p.horizon, 0.0);
+    std::vector<double> eps_nu0(p.horizon, 0.0);
+    if (omega_node.size() > 0) {
+      const int L0 = static_cast<int>(omega_node.size() / 2);
+      for (int i = 0; i < L0; ++i) {
+        eps_r0[i] = omega_node(i);
+        eps_nu0[i] = omega_node(L0 + i);
+      }
+    }
+    const double r_next0 = p.rho_r * z_ref(2);
+    const double nu_next0 = p.rho_nu * z_ref(3);
+    NkPath base_path;
+    if (bind0_override.has_value()) {
+      base_path = solve_nk_occbin_path_conditional_bind0(p, r_next0, nu_next0, eps_r0, eps_nu0, *bind0_override);
+    } else if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
+      base_path = solve_nk_occbin_path_conditional_bind0(p, r_next0, nu_next0, eps_r0, eps_nu0, bind0_fixed);
+    } else {
+      base_path = solve_nk_occbin_path(p, r_next0, nu_next0, eps_r0, eps_nu0);
+    }
+    const std::vector<int> bind_path = base_path.bind;
+
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
-      if (bind0_override.has_value()) {
-        return nk_transition_markov_anticipated_conditional_bind0(p, z4, 0.0, 0.0, omega_node,
-                                                                  *bind0_override);
-      }
-      if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
-        return nk_transition_markov_anticipated_conditional_bind0(p, z4, 0.0, 0.0, omega_node, bind0_fixed);
-      }
-      return nk_transition_markov_anticipated(p, z4, 0.0, 0.0, omega_node);
+      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega_node, bind_path);
     };
 
     const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
     Eigen::Vector4d z_mean;
-    if (bind0_override.has_value()) {
-      z_mean = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, 0.0, omega_node,
-                                                                  *bind0_override);
-    } else if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
-      z_mean = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, 0.0, omega_node, bind0_fixed);
-    } else {
-      z_mean = nk_transition_markov_anticipated(p, z_ref, 0.0, 0.0, omega_node);
-    }
+    z_mean = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega_node, bind_path);
 
     const double h = 1e-6;
     Eigen::Vector4d zrp, zrm, znp, znm;
-    if (bind0_override.has_value()) {
-      zrp = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, +h, 0.0, omega_node, *bind0_override);
-      zrm = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, -h, 0.0, omega_node, *bind0_override);
-      znp = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, +h, omega_node, *bind0_override);
-      znm = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, -h, omega_node, *bind0_override);
-    } else if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
-      zrp = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, +h, 0.0, omega_node, bind0_fixed);
-      zrm = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, -h, 0.0, omega_node, bind0_fixed);
-      znp = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, +h, omega_node, bind0_fixed);
-      znm = nk_transition_markov_anticipated_conditional_bind0(p, z_ref, 0.0, -h, omega_node, bind0_fixed);
-    } else {
-      zrp = nk_transition_markov_anticipated(p, z_ref, +h, 0.0, omega_node);
-      zrm = nk_transition_markov_anticipated(p, z_ref, -h, 0.0, omega_node);
-      znp = nk_transition_markov_anticipated(p, z_ref, 0.0, +h, omega_node);
-      znm = nk_transition_markov_anticipated(p, z_ref, 0.0, -h, omega_node);
-    }
+    zrp = nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega_node, bind_path);
+    zrm = nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega_node, bind_path);
+    znp = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega_node, bind_path);
+    znm = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega_node, bind_path);
 
     const Eigen::Vector4d Br = (zrp - zrm) / (2.0 * h);
     z_mean += Br * unexpected_eps_r_mean;
