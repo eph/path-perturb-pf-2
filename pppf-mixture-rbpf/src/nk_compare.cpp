@@ -33,6 +33,7 @@ struct NkExperimentConfig {
   std::filesystem::path out_dir;
   std::uint64_t seed_data = 0;
   double shock_eps_r_irf = -2.0;
+  int omega_horizon = 1;  // number of anticipated innovations at t+2.. included in omega (per shock)
 };
 
 struct NkLinearCoeffs {
@@ -247,13 +248,13 @@ RunResult run_occbin_bootstrap_pf(const models::NkParams& p, int N, const Eigen:
 RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::Vector4d& mean0,
                                const Eigen::Matrix4d& cov0, const std::vector<Eigen::VectorXd>& y,
                                const Eigen::Matrix3d& R, std::uint64_t seed,
-                               double omega_var = 1.0) {
+                               double omega_var = 1.0, int omega_horizon = 1) {
   util::Rng rng(seed);
   util::Timer timer;
 
   const auto mixture_builder = [&](int /*t*/, const Eigen::VectorXd& ref_prev) {
     const Eigen::Vector4d z_ref = ref_prev;
-    return models::build_pppf_mixture(p, z_ref, /*omega_mean=*/0.0, omega_var);
+    return models::build_pppf_mixture(p, z_ref, omega_horizon, omega_var);
   };
 
   const auto obs_update = [&](int /*t*/, const Eigen::VectorXd& y_t, int /*k*/,
@@ -473,7 +474,9 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
     }
 
     {
-      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2);
+      const RunResult rr =
+          run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, /*omega_var=*/1.0,
+                                /*omega_horizon=*/cfg.omega_horizon);
       loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
       rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
       util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
@@ -555,7 +558,8 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
   for (int t = 0; t < Tirf; ++t) {
     const double eps_mean = (t == 0) ? shock_eps_r : 0.0;
     const double eps_var = 1.0;
-    const auto mix = models::build_pppf_mixture(p, z_mean, 0.0, 1.0, eps_mean, eps_var);
+    const auto mix = models::build_pppf_mixture(p, z_mean, /*omega_horizon=*/cfg.omega_horizon,
+                                                /*omega_var=*/1.0, eps_mean, eps_var);
 
     Eigen::Vector4d z_next = Eigen::Vector4d::Zero();
     Eigen::Matrix4d P_next = Eigen::Matrix4d::Zero();
@@ -641,7 +645,7 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
 
 void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::path& out_dir, int T,
                                     int N, int R, const Eigen::Matrix3d& Rm,
-                                    std::uint64_t seed_data) {
+                                    std::uint64_t seed_data, int omega_horizon = 1) {
   // This sanity check removes the ELB kink and uses a continuous (Gaussian) AR(1) DGP for (r,nu),
   // so that the entire model is linear-Gaussian and the likelihood is available exactly via Kalman.
   p.i_lower = -1000.0;
@@ -761,7 +765,8 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
       // To obtain a clean "all methods coincide" sanity check, we therefore set omega_var=0 so that
       // PPPF degenerates to a single linear-Gaussian kernel (K=1) and the RBPF coincides with Kalman.
       const RunResult rr =
-          run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, /*omega_var=*/0.0);
+          run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, /*omega_var=*/0.0,
+                                /*omega_horizon=*/omega_horizon);
       loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
       rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
       util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
@@ -831,7 +836,8 @@ int main() {
 
     std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
     // Use larger N and fewer repeats to keep the sanity check tight without being too slow.
-    run_nk_no_elb_continuous_sanity(p, "output/nk_sanity_no_elb", T, 2048, 10, Rm, 20260218ULL);
+    run_nk_no_elb_continuous_sanity(p, "output/nk_sanity_no_elb", T, 2048, 10, Rm, 20260218ULL,
+                                    /*omega_horizon=*/cfg1.omega_horizon);
 
     return 0;
   } catch (const std::exception& e) {
