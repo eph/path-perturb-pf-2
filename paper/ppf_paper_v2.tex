@@ -105,14 +105,16 @@ This paper contributes:
 \end{enumerate}
 
 The remainder of the paper is organized as follows.
-Section~2 introduces the nonlinear state-space model.
-Sections~3--5 derive the conditional linear-Gaussian approximation, its quadrature-induced mixture representation, and the role of discrete localization for globalization.
-Section~6 presents filtering and likelihood evaluation in detail.
-Sections~7--8 provide approximation-error decompositions and an explicit bias--variance--cost comparison to global-solution-based likelihood evaluation.
-Section~9 specifies and implements the New Keynesian ELB benchmark.
+Section~\ref{sec:ssm} introduces the nonlinear state-space model.
+Sections~\ref{sec:cond_lg}--\ref{sec:localization} derive the conditional linear-Gaussian approximation, its quadrature-induced mixture representation, and the role of discrete localization for globalization.
+Section~\ref{sec:filtering} presents filtering and likelihood evaluation in detail.
+Sections~\ref{sec:theory}--\ref{sec:dominance} provide approximation-error decompositions and an explicit bias--variance--cost comparison to global-solution-based likelihood evaluation.
+Section~\ref{sec:toy} provides a minimal toy example that isolates the quadrature-as-mixture and mixture-handling logic.
+Section~\ref{sec:nk_benchmark} specifies and implements the New Keynesian ELB benchmark.
 Appendices collect derivations and quadrature details.
 
 \section{Related literature}
+\label{sec:lit}
 
 This section situates PPPF relative to work on nonlinear DSGE likelihood evaluation, OBC solutions, and mixture/Rao--Blackwellized filtering.
 
@@ -144,6 +146,36 @@ Sigma-point quadrature and related deterministic integration rules are widely us
 PPPF uses such quadrature not as a single-Gaussian moment-matching device, but to produce an explicit mixture kernel that can be handled either by branching or by sampling mixture indices within an RBPF.
 
 \section{Nonlinear state-space model}
+\label{sec:ssm}
+
+\subsection{Notation (random variables, indices, and measures)}
+Table~\ref{tab:notation} records the main objects and resolves common symbol collisions (notably: $H$ is reserved for the EP horizon, and $M$ denotes the measurement matrix).
+When we ``integrate out'' the auxiliary anticipated-shock object $\omega$, it is always with respect to the Gaussian reference measure $\mu_\Omega(\dd\omega)=\mathcal{N}(0,\Omega)(\dd\omega)$.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$x_t\in\R^{n_x}$ & latent state (generic DSGE state vector used by the filter) \\
+$y_t\in\R^{n_y}$ & observed data \\
+$y_t = M x_t + \eta_t$ & measurement equation; $M$ is the measurement matrix \\
+$\eta_t\sim \mathcal{N}(0,R)$ & measurement noise; $R$ is the measurement covariance \\
+$\varepsilon_{t+1}\sim \mathcal{N}(0,\Sigma)$ & realized one-step structural innovation (random) \\
+$H$ & EP/SEP horizon length (finite-horizon stacked system) \\
+$\omega_t\sim\mathcal{N}(0,\Omega)$ & auxiliary integration variable for expectations beyond $t+1$ \\
+$\mu_\Omega(\dd\omega)$ & Gaussian measure $\mathcal{N}(0,\Omega)(\dd\omega)$ \\
+$k_t\in\{1,\ldots,K\}$ & quadrature node index; $\Pr(k_t=k)=w_k$ (if sampled as mixture) \\
+$w_k$ & quadrature/mixture weights ($w_k\ge 0$ if used as probabilities; $\sum_k w_k=1$) \\
+$s_t\in\{1,\ldots,J\}$ & localization index (partition cell or OBC regime/binding pattern) \\
+$j_t=(s_t,k_t)$ & combined discrete index used in the RBPF recursion \\
+$x_t^{\mathrm{ref}}$ & anchor/reference state for path solves and Jacobians \\
+\bottomrule
+\end{tabular}
+\caption{Core notation.}
+\label{tab:notation}
+\end{table}
 
 \subsection{Latent state and measurement}
 Let $(x_t)_{t\ge 0}$ be an $\R^{n_x}$-valued latent state and $(y_t)_{t\ge 1}$ observed data.
@@ -166,6 +198,7 @@ even though in DSGEs $F$ is usually not available in closed form.
 Let $K_\theta(x,\cdot)$ denote the true Markov kernel of $x_{t+1}\mid x_t=x$ induced by \eqref{eq:true_transition}.
 
 \section{From stacked equilibrium conditions to a conditional linear-Gaussian law}
+\label{sec:cond_lg}
 
 This section derives the object the filter will use: a Gaussian approximation to $K_\theta(x_t,\cdot)$ conditional on an auxiliary object (anticipated shocks) and a discrete localization index.
 
@@ -247,6 +280,7 @@ The PPPF construction can be viewed as: (i) using a SEP-style draw/quadrature no
 \end{remark}
 
 \section{Integrating out anticipated shocks}
+\label{sec:mixture}
 
 \subsection{Gaussian-mixture transition kernel}
 
@@ -278,6 +312,7 @@ For $\omega\sim \mathcal{N}(0,\Omega)\in\R^d$, the basic unscented transform use
 Sigma points are attractive when $d$ is small (e.g.\ a small number of shocks and short horizon).
 
 \section{Discrete localization and ``globalization'' of the approximation}
+\label{sec:localization}
 
 Sigma-point refinement controls the numerical integration error in \eqref{eq:mixture_kernel}, but does \emph{not} by itself eliminate the local-linearization and horizon/terminal-condition errors.
 This section introduces a second approximation axis that can yield a genuine global refinement scheme.
@@ -293,6 +328,9 @@ Partition a compact set $\mathcal{X}\subset\R^{n_x}$ into cells $\{\mathcal{X}_j
 For each anchor (and each quadrature node $\omega^{(k)}$) compute and store $(\bar x_{t+1}^{(j,k)},A^{(j,k)},B^{(j,k)})$.
 At runtime, map each $x_t$ to its cell index $s_t=j$ and use the corresponding precomputed linearization parameters.
 This turns online path solving into offline precomputation plus fast lookup/interpolation.
+When the continuous state is Rao--Blackwellized (stored as a Gaussian belief rather than as draws), one must also specify how $s_t$ is chosen from that belief.
+Two simple, reproducible choices are: (i) deterministic localization at the anchor/mean, $s_t=L(x_t^{\mathrm{ref}})$ or $s_t=L(\mu_{t-1})$, and (ii) probabilistic localization by cell mass, $\Pr(s_t=j)\propto \Pr(x_t\in\mathcal{X}_j)$ under the Gaussian belief (approximated by Monte Carlo or cheap bounds).
+The paper should state explicitly which convention is used in any implementation.
 
 \item \textbf{Occasionally binding constraints (OBCs).}
 Let $s_t$ encode the binding/slack pattern of a constraint over the horizon (a regime path).
@@ -301,6 +339,11 @@ In a filter, the regime can be treated as latent: particles can branch over regi
 Aruoba et al.\ \citep{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021} construct globally piecewise-linear and continuous decision rules and derive a conditionally optimal particle filter (COPF) that exploits this structure.
 Our framework nests the idea of treating the binding pattern as a discrete index that makes the conditional system linear.
 \end{enumerate}
+
+\paragraph{Differentiability at kinks (what Jacobian is used).}
+At a kink induced by a max/min constraint (e.g.\ the ELB), derivatives of the reduced-form policy mapping may be undefined.
+PPPF avoids this ambiguity by conditioning on a regime $s_t$ that selects a \emph{smooth} set of equilibrium equations (binding versus slack), computing pathwise Jacobians for that smooth system, and then integrating/summing over regimes via the discrete index.
+Near the boundary, a small mixture over regimes (e.g.\ bind/slack) can be carried to reduce bias from hard regime selection.
 
 \subsection{A simple approximation theorem for localization refinement}
 
@@ -338,6 +381,7 @@ In that case one refines the partition more aggressively near the kink set, or t
 \end{remark}
 
 \section{Filtering and likelihood evaluation}
+\label{sec:filtering}
 
 \subsection{Gaussian-sum representation}
 
@@ -369,20 +413,23 @@ Each RBPF particle stores a Kalman-filter state (mean/covariance) for the contin
 \paragraph{A practitioner-oriented algorithm.}
 Given $N$ particles and data $y_{1:T}$, an RBPF likelihood evaluator can be summarized as:
 \begin{enumerate}[leftmargin=*, itemsep=2pt]
-\item Initialize each particle $i$ with a Gaussian prior $(\mu_0^{(i)},P_0^{(i)})$ and weight $w_0^{(i)}=1/N$.
+\item Initialize each particle $i$ with a Gaussian prior $(\mu_0^{(i)},P_0^{(i)})$ and particle weight $W_0^{(i)}=1/N$.
 \item For each $t=1,\ldots,T$:
 \begin{enumerate}[leftmargin=*, itemsep=2pt]
-\item Build (or update) a mixture approximation to the one-step transition, producing weights $w_{t}^{(s,k)}$ and component parameters $(A_{t}^{(s,k)},a_{t}^{(s,k)},Q_{t}^{(s,k)})$.
-In practice this can be done using a reference state (e.g.\ a weighted mean of particles) to avoid solving an extended-path system per particle.
+\item Choose an anchor state $x_t^{\mathrm{ref}}$ at which to build pathwise parameters.
+Two common choices are (i) per-particle anchors $x_t^{\mathrm{ref},(i)}=\mu_{t-1}^{(i)}$ (accurate but expensive) and (ii) a shared anchor $x_t^{\mathrm{ref}}=\sum_i W_{t-1}^{(i)}\mu_{t-1}^{(i)}$ (cheap but introduces anchor-reuse error).
+\item Build (or update) a mixture approximation to the one-step transition at the chosen anchor(s), producing component weights $\tilde w_{t}^{(s,k)}$ and parameters $(A_{t}^{(s,k)},a_{t}^{(s,k)},Q_{t}^{(s,k)})$.
+In PPPF these parameters come from an EP/SEP-style stacked solve at $(x_t^{\mathrm{ref}},\omega^{(k)},s)$ followed by pathwise Jacobians, with $Q=B\Sigma B^\top$.
 \item For each particle $i$:
 \begin{enumerate}[leftmargin=*, itemsep=1pt]
-\item Sample a discrete index $j_t^{(i)}=(s_t^{(i)},k_t^{(i)})$ from a proposal $q_t(\cdot)$ (the simplest choice is the prior $q_t(j)=w_t^{(j)}$).
-\item Kalman predict under the sampled component: $(\mu_{t|t-1}^{(i)},P_{t|t-1}^{(i)})$.
+\item Sample a discrete index $j_t^{(i)}=(s_t^{(i)},k_t^{(i)})$ from a proposal $q_t^{(i)}(\cdot)$.
+The simplest choice is the prior $q_t^{(i)}(j)=\tilde w_t^{(j)}$, but a recommended default is the auxiliary proposal $q_t^{(i)}(j)\propto \tilde w_t^{(j)}\,p(y_t\mid y_{1:t-1},j,i)$, where the predictive likelihood is available from the Kalman predict step under component $j$.
+\item Kalman predict under the sampled component $j_t^{(i)}$: $(\mu_{t|t-1}^{(i)},P_{t|t-1}^{(i)})$.
 \item Kalman update given $y_t$, obtaining $(\mu_t^{(i)},P_t^{(i)})$ and the predictive density $p(y_t\mid y_{1:t-1},j_t^{(i)},i)$.
 \item Update the particle weight by multiplying by the predictive density and the proposal correction factor:
 \[
- w_t^{(i)} \propto w_{t-1}^{(i)}\, p(y_t\mid y_{1:t-1},j_t^{(i)},i)\,
- \frac{w_t^{(j_t^{(i)})}}{q_t(j_t^{(i)})}.
+ W_t^{(i)} \propto W_{t-1}^{(i)}\, p(y_t\mid y_{1:t-1},j_t^{(i)},i)\,
+ \frac{\tilde w_t^{(j_t^{(i)})}}{q_t^{(i)}(j_t^{(i)})}.
 \]
 \end{enumerate}
 \item Normalize weights, compute ESS, and resample if ESS falls below a threshold (e.g.\ $0.5N$).
@@ -392,13 +439,8 @@ In practice this can be done using a reference state (e.g.\ a weighted mean of p
 
 The key advantage of RBPF is that the Kalman step analytically integrates out the continuous state conditional on the discrete history, often providing substantial variance reduction.
 More sophisticated proposals (auxiliary particle filters) can improve ESS further by conditioning $q_t$ on $y_t$ \citep{PittShephard1999}.
-\paragraph{Recommended auxiliary proposal for mixture indices.}
-In the sampling (non-branching) RBPF variant, a high-leverage default is
-\[
-q_t(j)\propto w_t^{(j)}\,p(y_t\mid y_{1:t-1},j),
-\]
-where $j=(s,k)$ and the predictive likelihood $p(y_t\mid y_{1:t-1},j)$ is available from the Kalman predict step under component $j$.
-This targets mixture components that both have nontrivial prior weight and are consistent with the current observation, often improving ESS at negligible additional cost.
+\paragraph{Computational cost model (one sentence).}
+At a given $t$, the dominant cost is roughly $(\#\text{ evaluated }(s,k))\times(\text{EP solve}+\text{Jacobian solve})$ plus $N$ Kalman updates; warm starts, caching by $(s,k)$, and shared-anchor solves are therefore first-order practical levers.
 
 \subsection{Algorithmic detail: mixture handling and quadrature choices}
 
@@ -421,6 +463,7 @@ More generally, localization can represent a partition of the state space, refin
 Section~5 formalizes this ``globalization'' logic.
 
 \section{Approximation theory: kernel, filter, and likelihood}
+\label{sec:theory}
 
 \subsection{Quadrature refinement converges to the mixture kernel}
 
@@ -461,7 +504,8 @@ Write the total kernel error as
 +
 \underbrace{\|\widehat K_{\theta,K}-\widehat K_{\theta,K,J}\|}_{\text{localization}},
 \]
-where $\widetilde K_{\theta,H,p}$ denotes the kernel induced by the \emph{exact} finite-horizon stochastic perfect-foresight solution with $p$ periods of expectation integration (no linearization), and $\widehat K_{\theta,K,J}$ denotes the practical PPPF kernel with $K$ quadrature nodes and localization mesh index $J$.
+where $\widetilde K_{\theta,H,p}$ denotes the kernel induced by the \emph{exact} finite-horizon stochastic perfect-foresight solution with $p$ future periods' expectations approximated by integration over $\omega$ (no linearization), and $\widehat K_{\theta,K,J}$ denotes the practical PPPF kernel with $K$ quadrature nodes and localization mesh index $J$.
+In the baseline construction in Section~\ref{sec:cond_lg}, $\omega_t$ covers periods $t+2,\ldots,t+H-1$, so $p=H-2$.
 
 \subsection{From kernel error to filter and likelihood error}
 
@@ -503,6 +547,7 @@ up to geometric forgetting factors.
 \end{corollary}
 
 \section{When can PPPF be ``better'' than a global solution?}
+\label{sec:dominance}
 
 Let $\ell_\theta$ denote the \emph{true} log-likelihood and let $\widehat \ell_\theta^{(A)}$ be a particle-based estimator using approximation strategy $A\in\{\mathrm{glob},\mathrm{pppf}\}$.
 Under a compute budget $C$, the feasible particle count is roughly $N_A \approx C/c_A$, where $c_A$ is cost per particle per period.
@@ -524,7 +569,38 @@ A sufficient ``dominance'' condition is therefore:
 \]
 This inequality makes explicit why PPPF can lose in small models (high $c_{\mathrm{pppf}}$, weak RB gains) but win in large models where the global solution is expensive and RB gains are large.
 
+\section{A minimal toy example (no DSGE background)}
+\label{sec:toy}
+
+The NK--ELB benchmark in Section~\ref{sec:nk_benchmark} is economically meaningful but combines multiple approximation axes (finite horizon, expectation approximation, local linearization, and regime handling at a kink).
+This subsection records a minimal toy example whose ``truth'' can be computed to high accuracy and that isolates the \emph{anticipated-shock quadrature} and \emph{mixture-handling} components of PPPF.
+
+\paragraph{Toy nonlinear state-space model.}
+Let $x_t\in\R$ and $y_t\in\R$ satisfy
+\[
+y_t = x_t + \eta_t,\qquad \eta_t\sim\mathcal{N}(0,r),
+\]
+and define a transition that is conditionally linear-Gaussian given an auxiliary Gaussian variable $\omega_t$:
+\[
+x_{t+1}\mid (x_t,\omega_t) = \rho x_t + b\,\tanh(\omega_t) + \sigma \varepsilon_{t+1},
+\qquad
+\varepsilon_{t+1}\sim\mathcal{N}(0,1),
+\qquad
+\omega_t\sim\mathcal{N}(0,\Omega).
+\]
+Integrating out $\omega_t$ yields a Gaussian mixture kernel of the form \eqref{eq:mixture_kernel}--\eqref{eq:quadrature_kernel}.
+This captures in the simplest possible way the PPPF logic: an auxiliary Gaussian object represents expectation-relevant nonlinear terms (here $b\tanh(\omega)$), and quadrature produces an explicit mixture transition rather than a single Gaussian moment match.
+
+\paragraph{What this toy diagnoses.}
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Certainty equivalence (CE):} set $\omega_t\equiv 0$, producing a single Gaussian transition with mean $\rho x_t$.
+\item \textbf{Quadrature bias:} compare $K=1$ versus increasing $K$ in \eqref{eq:quadrature_kernel} (with nonnegative weights when sampling indices).
+\item \textbf{Mixture handling:} compare (i) sampling/branching over mixture indices $k_t$ versus (ii) collapsing the mixture to a single Gaussian by moment matching (which is generally biased for likelihoods).
+\end{itemize}
+Because the model is one-dimensional, a high-accuracy reference likelihood can be computed by a fine-grid discretization or a large-$K$ Monte Carlo mixture approximation, making this a compact, reviewer-friendly validation of the ``quadrature-as-mixture'' idea.
+
 \section{Benchmark: a New Keynesian model with an ELB}
+\label{sec:nk_benchmark}
 
 This section specifies a concrete benchmark that directly connects to the OccBin and PLC/COPF literatures.
 
@@ -574,6 +650,7 @@ In our reference implementation we include a PLC-inspired baseline by interpolat
 \item \textbf{PPPF with anticipated-shock quadrature and regime localization.}
 In the PPPF approach, we treat the ELB binding pattern over the EP horizon as part of the localization index $s_t$ and integrate over short-horizon anticipated shocks $\omega_t$ by sigma points/quadrature.
 Conditional on $(s_t,\omega_t)$ the system is linear, enabling Rao--Blackwellization.
+For ELB applications, conditioning on $s_t$ is also the recommended way to avoid differentiating through the max operator: compute Jacobians for the smooth binding/slack system selected by $s_t$, and (near the boundary) carry a small mixture over regimes rather than committing to a single binding pattern.
 \end{enumerate}
 
 \subsection{Proposed evaluation metrics}
@@ -600,6 +677,16 @@ In the NK--ELB experiment, the OccBin extended-path horizon is $H=20$.
 We solve the discretized global benchmark (Tauchen grid) and simulate a dataset of length $T=250$ from that benchmark, adding small independent measurement noise on $(\pi_t,\tilde y_t,i_t)$.
 For likelihood evaluation we use $N=256$ particles and repeat each filter run $N_{\mathrm{rep}}=30$ times with different random seeds to measure Monte Carlo variability.
 All artifacts (CSV + plots) are written under \texttt{pppf-mixture-rbpf/output/}.
+
+\paragraph{Ablations to attribute PPPF bias.}
+To diagnose which approximation axis drives likelihood bias in Table~\ref{tab:nk_summary}, a minimal ablation suite should vary one component at a time:
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+\item \textbf{Expectation approximation (quadrature):} $K=1$ (certainty equivalence) versus increasing $K$ under a positive-weight rule; optionally hold $\Var(\omega)$ fixed and vary the dimension-reduction scheme for $\omega$.
+\item \textbf{Finite horizon/terminal condition:} vary $H$ (and/or the terminal mapping) to reveal truncation error, especially in deep ELB episodes.
+\item \textbf{Local linearization / anchor reuse:} per-particle EP/Jacobians versus shared-anchor parameters, and a hybrid trigger ``per-particle near kink only.''
+\item \textbf{Regime handling at the kink:} hard regime selection versus a small regime mixture (bind/slack) near the ELB boundary; optionally vary the regime-path length encoded in $s_t$.
+\end{itemize}
+Reporting the mean log-likelihood gap to the discretized benchmark across these toggles turns ``variance success / bias failure'' into an actionable bias attribution.
 
 \paragraph{Exact likelihood for the discretized global benchmark (HMM forward algorithm).}
 The discretized global benchmark used in this experiment induces a finite-state hidden Markov model (HMM) for the exogenous state.
@@ -697,6 +784,10 @@ PPPF replaces a global nonlinear approximation of DSGE policy functions with man
 With Gaussian shocks and linear measurement equations, this yields a Gaussian-mixture state-space model amenable to Rao--Blackwellized particle filtering.
 We provided derivations, convergence statements for quadrature and localization refinement, and stability-based links from kernel error to likelihood error.
 A New Keynesian ELB benchmark offers a natural comparison to the OccBin and PLC/COPF literatures.
+
+\paragraph{Limitations and next steps (prototype to method).}
+The NK--ELB results highlight that PPPF can deliver substantial variance reduction (high ESS, low Monte Carlo variability) while still exhibiting approximation bias when any of the four approximation axes is too crude.
+The highest-leverage next steps are: (i) make ELB regime handling fully regime-conditioned (and use regime mixtures near the boundary), (ii) design genuinely low-dimensional $\omega$ objects so positive-weight quadrature is feasible at moderate $K$, and (iii) add the ablation suite in Section~\ref{sec:nk_benchmark} to attribute remaining bias to $(H,K)$, anchor reuse, and regime handling.
 
 \appendix
 
