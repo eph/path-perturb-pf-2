@@ -1150,9 +1150,13 @@ struct CliOptions {
   int R = 30;
   int horizon = 20;
   int omega_horizon = 1;
+  std::uint64_t seed_data = 20260113ULL;
+  std::uint64_t seed_sanity = 20260218ULL;
   std::filesystem::path out_dir = "output/nk";
   std::filesystem::path out_dir_abl = "output/nk_ablation";
+  std::filesystem::path out_dir_sanity = "output/nk_sanity_no_elb";
   std::filesystem::path paper_table = {};
+  bool run_sanity = true;
 };
 
 CliOptions parse_args(int argc, char** argv) {
@@ -1175,16 +1179,25 @@ CliOptions parse_args(int argc, char** argv) {
       opt.horizon = std::stoi(need(a));
     } else if (a == "--omega_horizon") {
       opt.omega_horizon = std::stoi(need(a));
+    } else if (a == "--seed_data") {
+      opt.seed_data = static_cast<std::uint64_t>(std::stoull(need(a)));
+    } else if (a == "--seed_sanity") {
+      opt.seed_sanity = static_cast<std::uint64_t>(std::stoull(need(a)));
     } else if (a == "--out_dir") {
       opt.out_dir = need(a);
     } else if (a == "--out_dir_abl") {
       opt.out_dir_abl = need(a);
+    } else if (a == "--out_dir_sanity") {
+      opt.out_dir_sanity = need(a);
     } else if (a == "--paper_table") {
       opt.paper_table = need(a);
+    } else if (a == "--no_sanity") {
+      opt.run_sanity = false;
     } else if (a == "--help" || a == "-h") {
       std::cout << "Usage: nk_compare [--mode baseline|ablations] [--T int] [--N int] [--R int]\\n";
       std::cout << "                 [--horizon int] [--omega_horizon int] [--out_dir path]\\n";
       std::cout << "                 [--out_dir_abl path] [--paper_table path]\\n";
+      std::cout << "                 [--seed_data uint64] [--seed_sanity uint64] [--out_dir_sanity path] [--no_sanity]\\n";
       std::exit(0);
     } else {
       throw std::invalid_argument("unknown flag: " + a);
@@ -1226,17 +1239,19 @@ int main(int argc, char** argv) {
       NkExperimentConfig cfg1;
       cfg1.p = p;
       cfg1.out_dir = cli.out_dir;
-      cfg1.seed_data = 20260113ULL;
+      cfg1.seed_data = cli.seed_data;
       cfg1.shock_eps_r_irf = -2.0;
       cfg1.omega_horizon = cli.omega_horizon;
       run_nk_experiment(cfg1, cli.T, cli.N, cli.R, Rm);
 
-      std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
-      run_nk_no_elb_continuous_sanity(p, "output/nk_sanity_no_elb", cli.T, 2048, 10, Rm, 20260218ULL,
-                                      /*omega_horizon=*/cfg1.omega_horizon);
+      if (cli.run_sanity) {
+        std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
+        run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, 2048, 10, Rm, cli.seed_sanity,
+                                        /*omega_horizon=*/cfg1.omega_horizon);
+      }
     } else if (cli.mode == "ablations") {
       std::cout << "\n=== NK-ELB ablation suite ===\n";
-      run_nk_elb_ablations(p, cli.T, cli.N, cli.R, Rm, 20260113ULL, cli.out_dir_abl, cli.paper_table);
+      run_nk_elb_ablations(p, cli.T, cli.N, cli.R, Rm, cli.seed_data, cli.out_dir_abl, cli.paper_table);
     } else {
       throw std::invalid_argument("unknown mode: " + cli.mode);
     }

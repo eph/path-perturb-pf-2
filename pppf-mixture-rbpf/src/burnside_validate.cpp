@@ -23,8 +23,52 @@ std::string format_tag(double v) {
 }
 }  // namespace
 
-int main() {
+struct CliOptions {
+  int T = 40;
+  std::vector<double> shock_sizes = {0.5, 1.0, 2.0};
+  std::filesystem::path out_dir = "output/burnside";
+};
+
+std::vector<double> parse_csv_doubles(const std::string& s) {
+  std::vector<double> out;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    if (tok.empty()) continue;
+    out.push_back(std::stod(tok));
+  }
+  return out;
+}
+
+CliOptions parse_args(int argc, char** argv) {
+  CliOptions opt;
+  for (int i = 1; i < argc; ++i) {
+    const std::string a(argv[i]);
+    auto need = [&](const std::string& flag) {
+      if (i + 1 >= argc) throw std::invalid_argument("missing value for " + flag);
+      return std::string(argv[++i]);
+    };
+    if (a == "--T") {
+      opt.T = std::stoi(need(a));
+    } else if (a == "--shock_sizes") {
+      opt.shock_sizes = parse_csv_doubles(need(a));
+      if (opt.shock_sizes.empty()) throw std::invalid_argument("shock_sizes must be nonempty");
+    } else if (a == "--out_dir") {
+      opt.out_dir = need(a);
+    } else if (a == "--help" || a == "-h") {
+      std::cout << "Usage: burnside_validate [--T int] [--shock_sizes a,b,c] [--out_dir path]\n";
+      std::exit(0);
+    } else {
+      throw std::invalid_argument("unknown flag: " + a);
+    }
+  }
+  return opt;
+}
+
+int main(int argc, char** argv) {
   try {
+    const CliOptions cli = parse_args(argc, argv);
+
     models::BurnsideParams p;
     p.beta = 0.99;
     p.gamma = 2.0;
@@ -32,10 +76,10 @@ int main() {
     p.mu = 0.0;
     p.sigma = 0.006;
 
-    const int T = 40;
-    const std::vector<double> shock_sizes = {0.5, 1.0, 2.0};
+    const int T = cli.T;
+    const std::vector<double> shock_sizes = cli.shock_sizes;
 
-    const std::filesystem::path out_dir = "output/burnside";
+    const std::filesystem::path out_dir = cli.out_dir;
     util::ensure_dir(out_dir);
 
     // Clean prior IRF artifacts to keep output deterministic.

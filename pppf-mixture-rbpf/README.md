@@ -112,6 +112,8 @@ From `pppf-mixture-rbpf/`:
 experiments/run_all.sh
 ```
 
+This runs the config-driven pipeline in `experiments/configs/paper_refresh.toml` and then generates the optional PNG plots.
+
 Artifacts are written under `output/`:
 
 - `output/burnside/irf_*.csv` and `output/burnside/irf_*.png`

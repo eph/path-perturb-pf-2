@@ -1,0 +1,49 @@
+[build]
+enabled = true
+type = "Release"
+
+[burnside]
+enabled = true
+T = 40
+shock_sizes = [0.5, 1.0, 2.0]
+out_dir = "output/burnside"
+paper_data_dir = "../paper/data/burnside"
+
+[nk.baseline]
+enabled = true
+T = 250
+N = 256
+R = 30
+horizon = 20
+omega_horizon = 1
+seed_data = 20260113
+out_dir = "output/nk"
+run_sanity = false
+paper_data_dir = "../paper/data/nk"
+
+[nk.ablations]
+enabled = true
+T = 250
+N = 256
+R = 30
+horizon = 20
+seed_data = 20260113
+out_dir = "output/nk_ablation"
+paper_table = "../paper/tab_nk_ablations.tex"
+
+[nk.sweeps]
+enabled = false
+out_dir_root = "output/nk_sweeps"
+summary_csv = "output/nk_sweeps/summary.csv"
+table_tex = "../paper/tab_nk_sweeps.tex"
+methods = ["occbin_bootstrap_pf", "pppf_mixture_rbpf", "plc_copf_pf"]
+
+[[nk.sweeps.cases]]
+name = "baseline"
+T = 250
+N = 256
+R = 30
+horizon = 20
+omega_horizon = 1
+seed_data = 20260113
+
