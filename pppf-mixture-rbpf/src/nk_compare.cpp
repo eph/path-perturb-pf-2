@@ -291,6 +291,68 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
   return res;
 }
 
+void expected_irf_pppf_shared_anchor_mc(const models::NkParams& p, int T, double shock_eps_r,
+                                        int omega_horizon, std::vector<double>* x_out,
+                                        std::vector<double>* pi_out, std::vector<double>* i_out,
+                                        int num_particles = 20000,
+                                        std::uint64_t seed = 20260306ULL) {
+  if (!x_out || !pi_out || !i_out) throw std::invalid_argument("expected_irf_pppf_shared_anchor_mc: null out");
+  if (num_particles <= 0) throw std::invalid_argument("expected_irf_pppf_shared_anchor_mc: num_particles<=0");
+
+  util::Rng rng(seed);
+  std::vector<Eigen::Vector4d> particles(num_particles, Eigen::Vector4d::Zero());
+
+  x_out->assign(T, 0.0);
+  pi_out->assign(T, 0.0);
+  i_out->assign(T, 0.0);
+
+  auto sample_gaussian = [&](const Eigen::Vector4d& mean, const Eigen::Matrix4d& cov) {
+    Eigen::Matrix4d Q = cov;
+    Eigen::LLT<Eigen::Matrix4d> llt(Q);
+    if (llt.info() != Eigen::Success) {
+      Q += 1e-10 * Eigen::Matrix4d::Identity();
+      llt.compute(Q);
+      if (llt.info() != Eigen::Success) {
+        throw std::runtime_error("expected_irf_pppf_shared_anchor_mc: Q not PD");
+      }
+    }
+    return mean + llt.matrixL() * rng.normal_vec(4);
+  };
+
+  for (int t = 0; t < T; ++t) {
+    Eigen::Vector4d z_ref = Eigen::Vector4d::Zero();
+    for (const auto& z : particles) z_ref += z;
+    z_ref /= static_cast<double>(num_particles);
+
+    const double eps_mean = (t == 0) ? shock_eps_r : 0.0;
+    // For an IRF, the period-0 natural-rate impulse is realized rather than integrated over.
+    const double eps_var_r = (t == 0) ? 0.0 : 1.0;
+    const double eps_var_nu = (t == 0) ? 0.0 : 1.0;
+    const auto mix = models::build_pppf_mixture(
+        p, z_ref, /*omega_horizon=*/omega_horizon, /*omega_var=*/1.0, eps_mean, eps_var_r, eps_var_nu);
+
+    std::vector<Eigen::Vector4d> next_particles(num_particles);
+    double mean_x = 0.0;
+    double mean_pi = 0.0;
+    double mean_i = 0.0;
+
+    for (int n = 0; n < num_particles; ++n) {
+      const int k = rng.categorical(mix.weights);
+      const auto& tr = mix.components[k];
+      const Eigen::Vector4d mean = tr.A * particles[n] + tr.a;
+      next_particles[n] = sample_gaussian(mean, tr.Q);
+      mean_x += next_particles[n](0);
+      mean_pi += next_particles[n](1);
+      mean_i += models::nk_policy_rate(p, next_particles[n]);
+    }
+
+    particles.swap(next_particles);
+    (*x_out)[t] = mean_x / static_cast<double>(num_particles);
+    (*pi_out)[t] = mean_pi / static_cast<double>(num_particles);
+    (*i_out)[t] = mean_i / static_cast<double>(num_particles);
+  }
+}
+
 void write_summary_json(const std::filesystem::path& path,
                         const std::map<std::string, std::vector<double>>& loglik_by_method,
                         const std::map<std::string, std::vector<double>>& rt_by_method,
@@ -560,49 +622,11 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
     nu_prev = nu_t;
   }
 
-  // PPPF-mixture mean IRF: propagate mean+cov under the time-varying mixture kernel built at the current mean.
-  Eigen::Vector4d z_mean = Eigen::Vector4d::Zero();
-  Eigen::Matrix4d P = Eigen::Matrix4d::Zero();
-  for (int t = 0; t < Tirf; ++t) {
-    const double eps_mean = (t == 0) ? shock_eps_r : 0.0;
-    const double eps_var = 1.0;
-    const auto mix = models::build_pppf_mixture(p, z_mean, /*omega_horizon=*/cfg.omega_horizon,
-                                                /*omega_var=*/1.0, eps_mean, eps_var);
-
-    Eigen::Vector4d z_next = Eigen::Vector4d::Zero();
-    Eigen::Matrix4d P_next = Eigen::Matrix4d::Zero();
-    std::vector<Eigen::Vector4d> mks(mix.size());
-    std::vector<Eigen::Matrix4d> Pks(mix.size());
-    for (int k = 0; k < mix.size(); ++k) {
-      const auto& tr = mix.components[k];
-      mks[k] = tr.A * z_mean + tr.a;
-      Pks[k] = tr.A * P * tr.A.transpose() + tr.Q;
-      z_next += mix.weights[k] * mks[k];
-    }
-    for (int k = 0; k < mix.size(); ++k) {
-      const Eigen::Vector4d dm = mks[k] - z_next;
-      P_next += mix.weights[k] * (Pks[k] + dm * dm.transpose());
-    }
-    z_mean = z_next;
-    P = P_next;
-
-    irf_x_pppf[t] = z_mean(0);
-    irf_pi_pppf[t] = z_mean(1);
-    // Approximate E[i_t] using a Gaussian approximation for i_rule.
-    const Eigen::RowVector4d h_rule =
-        (Eigen::RowVector4d() << p.phi_x, p.phi_pi, 0.0, 1.0).finished();
-    const double mu_i = p.i_ss + (h_rule * z_mean)(0);
-    const double var_i = (h_rule * P * h_rule.transpose())(0, 0);
-    const double sd_i = std::sqrt(std::max(0.0, var_i));
-    if (sd_i < 1e-12) {
-      irf_i_pppf[t] = std::max(p.i_lower, mu_i);
-    } else {
-      const double z = (p.i_lower - mu_i) / sd_i;
-      const double Phi = 0.5 * (1.0 + std::erf(z / std::sqrt(2.0)));
-      const double phi = std::exp(-0.5 * z * z) / std::sqrt(2.0 * M_PI);
-      irf_i_pppf[t] = p.i_lower * Phi + mu_i * (1.0 - Phi) + sd_i * phi;
-    }
-  }
+  // PPPF expected IRF: simulate the approximate PPPF transition kernel directly.
+  // This is more comparable to the stochastic global benchmark than collapsing the mixture
+  // recursion to a single Gaussian mean/covariance process at each step.
+  expected_irf_pppf_shared_anchor_mc(p, Tirf, shock_eps_r, cfg.omega_horizon, &irf_x_pppf, &irf_pi_pppf,
+                                     &irf_i_pppf);
 
   // Global stochastic solution on a discrete Markov chain (state-space, expectation-consistent).
   models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
