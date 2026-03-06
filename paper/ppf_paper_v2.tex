@@ -63,6 +63,8 @@ Fourth, we evaluate the resulting approximate likelihood with a Rao--Blackwelliz
 The paper distinguishes the true DSGE transition from the finite-horizon stochastic perfect-foresight kernel, the local-linearization kernel, and the numerically integrated mixture kernel, so the source of bias is explicit at each step.
 We provide an end-to-end algorithm, a notation refactor, and a benchmark design that separates approximation bias from Monte Carlo variance.
 In a New Keynesian model with an effective lower bound, PPPF delivers substantial variance reduction relative to a bootstrap particle filter, but its bias is driven mainly by horizon truncation, coarse anticipated-shock integration, anchor reuse, and regime handling at the kink.
+In the benchmark specification, clustered anchors materially improve likelihood evaluation, while an ELB-aware discrete current-shock mixture repairs the direct impulse-response pathology that arose when the one-step innovation was closed with a single Gaussian covariance.
+Even after those fixes, however, sizable likelihood gaps remain at the long-sample benchmark, so the paper's conclusion is not that PPPF is solved, but that its remaining error is now concentrated in a much narrower and more interpretable part of the transition approximation.
 \end{abstract}
 
 \noindent\textbf{Keywords:} nonlinear DSGE estimation; particle filter; Rao--Blackwellization; extended path; stochastic extended path; dynamic perturbation; sigma points; occasionally binding constraints; effective lower bound.\\
@@ -95,7 +97,9 @@ Only after those approximations are fixed do we evaluate the likelihood with a R
 This decomposition matters because improvement in one layer need not reduce the dominant error in another.
 
 The New Keynesian effective-lower-bound benchmark makes this point sharply.
-The benchmark shows that Rao--Blackwellization can reduce likelihood variance substantially, but that variance reduction does not by itself repair bias from a short horizon, a coarse anticipated-shock proxy, anchor reuse, or crude regime handling near the bound.
+The benchmark shows that Rao--Blackwellization can reduce likelihood variance substantially, and that clustered anchors can reduce filtering bias further by limiting anchor reuse near the ELB.
+But the decisive transition-side gain comes from replacing the local Gaussian closure for the realized innovation with a discrete shock mixture in ELB-risk states.
+That change repairs the benchmark impulse responses far more than anchor localization does, while still leaving nontrivial long-sample likelihood gaps.
 A paper that wants to make a credible econometric claim therefore has to present those approximation layers explicitly rather than reporting a single PPPF likelihood as though it were a primitive object.
 
 \subsection{Contributions and organization}
@@ -159,7 +163,7 @@ Every time we integrate out the anticipated-shock proxy $\omega_t$, the integrat
 
 \begin{table}[t]
 \centering
-\begin{tabular}{ll}
+\begin{tabular}{p{0.28\linewidth} p{0.62\linewidth}}
 \toprule
 Symbol & Meaning \\
 \midrule
@@ -172,11 +176,14 @@ $\varepsilon_{t+1}\sim \mathcal{N}(0,\Sigma)$ & realized one-step innovation (ra
 $H$ & horizon of the finite-horizon stacked system \\
 $\omega_t\sim\mathcal{N}(0,\Omega)$ & auxiliary anticipated-shock proxy (numerical integration variable) \\
 $\mu_\Omega(\dd\omega)$ & Gaussian measure $\mathcal{N}(0,\Omega)(\dd\omega)$ \\
+$a_t\in\{1,\ldots,A_t\}$ & deterministic anchor-group index used to localize path solves \\
+$z_t^{\mathrm{ref},a}$ & anchor/reference state for group $a$ \\
 $k_t\in\{1,\ldots,K\}$ & quadrature node index attached to $\omega^{(k)}$ \\
 $w_k$ & quadrature weights; if sampled they must be nonnegative and sum to one \\
+$q_t\in\{1,\ldots,Q_t\}$ & current-shock cubature index used only in ELB-risk states \\
+$\varpi_q$ & current-shock cubature weights; if sampled they must be nonnegative and sum to one \\
 $s_t\in\mathcal{S}_t$ & localization index: partition cell, regime path, or binding indicator \\
-$j_t=(s_t,k_t)$ & combined discrete index used in the RBPF recursion \\
-$z_t^{\mathrm{ref}}$ & anchor/reference state for path solves and Jacobians \\
+$j_t=(s_t,k_t,q_t)$ & sampled mixture index conditional on anchor group $a_t$ \\
 $x_t$ & output gap in the NK application only \\
 $\pi_t$ & inflation in the NK application only \\
 $i_t$ & policy rate in the NK application only \\
@@ -201,7 +208,12 @@ The paper treats $K_\theta(z,\cdot)$ as the exact object of interest and regards
 \label{sec:cond_lg}
 
 This section derives the transition used by the filter.
-The key point is that the local Gaussian law is conditional on two separate objects: the realized shock $\varepsilon_{t+1}$, which is random and moves the state from $t$ to $t+1$, and the anticipated-shock proxy $\omega_t$, which is a numerical device used to approximate expectations beyond $t+1$.
+The key distinction is between random shocks and numerical integration devices.
+The realized innovation $\varepsilon_{t+1}$ is random and moves the state from $t$ to $t+1$.
+The anticipated-shock proxy $\omega_t$ is a numerical device used to approximate expectations beyond $t+1$.
+In the ELB benchmark there is a third object in ELB-risk states: a positive-weight node for the realized current innovation.
+That node is also a numerical integration device.
+It approximates the law of $\varepsilon_{t+1}$ locally near the kink and is not an additional latent shock.
 
 \subsection{A finite-horizon ``stochastic perfect foresight'' system}
 
@@ -233,44 +245,52 @@ We denote a solution by $\bar U_t(z_t^{\mathrm{ref}},\omega_t,s_t;\theta)$ and i
 
 \subsection{Local perturbations around the path}
 
-The stacked system may be solved either at each particle's current state or at a shared anchor $z_t^{\mathrm{ref}}$, for example the weighted mean of the filtering distribution.
-The latter is cheaper but introduces an additional approximation when the affine correction is used far from the anchor.
+The stacked system may be solved at a shared anchor, at a small bank of clustered anchors, or at each particle's current state.
+With a shared anchor, one uses a single reference state such as the weighted mean of the filtering distribution.
+With clustered anchors, one partitions the previous-period particle cloud into a small number of deterministic groups and solves at anchor states $z_t^{\mathrm{ref},a}$ attached to those groups.
+Per-particle anchors set $z_t^{\mathrm{ref},a}=z_t$.
+Moving from shared to clustered to per-particle anchors reduces extrapolation error but increases the number of stacked solves.
 
-Fix $(z_t^{\mathrm{ref}},\omega_t,s_t)$ and let $\bar U_t$ solve \eqref{eq:stacked_system}.
+Fix an anchor $z_t^{\mathrm{ref},a}$, a future-shock proxy $\omega_t$, and a regime index $s_t$, and let $\bar U_t$ solve \eqref{eq:stacked_system}.
 Linearizing the stacked residual map around that solution and differentiating with respect to the realized one-step innovation $\varepsilon_{t+1}$ yields
 \begin{equation}
 \tilde z_{t+1}
 =
-A_t(z_t^{\mathrm{ref}},\omega_t,s_t)\,\tilde z_t
+A_t(z_t^{\mathrm{ref},a},\omega_t,s_t)\,\tilde z_t
 +
-B_t(z_t^{\mathrm{ref}},\omega_t,s_t)\,\varepsilon_{t+1}
+B_t(z_t^{\mathrm{ref},a},\omega_t,s_t)\,\varepsilon_{t+1}
 +
 r_t^{\mathrm{lin}},
 \label{eq:lin_dev}
 \end{equation}
-where $\tilde z_t=z_t-z_t^{\mathrm{ref}}$ and $r_t^{\mathrm{lin}}$ is the local Taylor remainder.
+where $\tilde z_t=z_t-z_t^{\mathrm{ref},a}$ and $r_t^{\mathrm{lin}}$ is the local Taylor remainder.
 Appendix~\ref{app:ift} derives the Jacobian formulas by the implicit function theorem.
-Dropping the remainder defines the PPPF one-step approximation conditional on $(\omega_t,s_t)$:
+Away from kinks, dropping the remainder and integrating the current innovation under its Gaussian law defines the PPPF one-step approximation conditional on $(\omega_t,s_t,a_t)$:
 \begin{equation}
-z_{t+1}\mid (z_t,\omega_t,s_t,z_t^{\mathrm{ref}})
+z_{t+1}\mid (z_t,\omega_t,s_t,a_t)
 \approx
-\mathcal{N}\!\left(m_t^{(s_t)}(z_t,\omega_t),\,Q_t^{(s_t)}(\omega_t)\right),
+\mathcal{N}\!\left(m_t^{(a_t,s_t)}(z_t,\omega_t),\,Q_t^{(a_t,s_t)}(\omega_t)\right),
 \label{eq:cond_gauss}
 \end{equation}
 with
 \begin{align}
-m_t^{(s)}(z_t,\omega_t)
+m_t^{(a,s)}(z_t,\omega_t)
 &=
-\bar z_{t+1}(z_t^{\mathrm{ref}},\omega_t,s)
+\bar z_{t+1}(z_t^{\mathrm{ref},a},\omega_t,s)
 +
-A_t(z_t^{\mathrm{ref}},\omega_t,s)\,(z_t-z_t^{\mathrm{ref}}), \label{eq:cond_mean}\\
-Q_t^{(s)}(\omega_t)
+A_t(z_t^{\mathrm{ref},a},\omega_t,s)\,(z_t-z_t^{\mathrm{ref},a}), \label{eq:cond_mean}\\
+Q_t^{(a,s)}(\omega_t)
 &=
-B_t(z_t^{\mathrm{ref}},\omega_t,s)\,\Sigma\,
-B_t(z_t^{\mathrm{ref}},\omega_t,s)^\top. \label{eq:cond_cov}
+B_t(z_t^{\mathrm{ref},a},\omega_t,s)\,\Sigma\,
+B_t(z_t^{\mathrm{ref},a},\omega_t,s)^\top. \label{eq:cond_cov}
 \end{align}
-If the solve is performed per particle, then $z_t^{\mathrm{ref}}=z_t$ and the affine correction term disappears.
-If a shared anchor is used, \eqref{eq:cond_mean} is a first-order extrapolation away from that anchor.
+If the solve is performed per particle, then $z_t^{\mathrm{ref},a}=z_t$ and the affine correction term disappears.
+If shared or clustered anchors are used, \eqref{eq:cond_mean} is a first-order extrapolation away from the relevant anchor.
+
+Near the ELB kink, the benchmark specification does not always collapse the realized current innovation into the single covariance matrix \eqref{eq:cond_cov}.
+Instead, for anchors that are locally at risk of switching between slack and binding regimes, the law of the realized current innovation is approximated by a positive-weight cubature rule $\{(\varepsilon_{t+1}^{(q)},\varpi_q)\}_{q=1}^{Q_t}$.
+Conditional on $(a_t,s_t,\omega_t,q_t)$, the method then linearizes around the path associated with the fixed current-shock node $\varepsilon_{t+1}^{(q_t)}$ and obtains a component mean $m_t^{(a,s,q)}(z_t,\omega_t)$ together with a residual covariance $Q_t^{(a,s,q),\mathrm{res}}$ that reflects only regularization or remaining smooth uncertainty.
+This current-shock mixture is the relevant refinement near the kink because a single Gaussian closure of $\varepsilon_{t+1}$ can average across different ELB regimes and generate spurious impact responses.
 
 \begin{remark}[Relation to dynamic perturbation and SEP]
 Dynamic perturbation \citep{MennuniRubioRamirezStepanchuk2025} also computes first-order expansions along equilibrium paths.
@@ -283,14 +303,14 @@ PPPF combines those ideas with a filtering recursion: the path solve and Jacobia
 
 \subsection{Gaussian-mixture transition kernel}
 
-For a fixed localization rule or regime weight $\alpha_t(s\mid z_t^{\mathrm{ref}},\omega)$, integrating out $\omega_t$ with respect to $\mu_\Omega$ yields the approximate transition kernel
+For a fixed anchor group $a_t=a$ and a fixed localization rule or regime weight $\alpha_t^{(a)}(s\mid \omega)$, integrating out $\omega_t$ with respect to $\mu_\Omega$ yields the approximate transition kernel
 \begin{equation}
-\widehat K_{\theta,H}^{\mathrm{pppf}}(z_t,\dd z_{t+1})
+\widehat K_{\theta,H}^{\mathrm{pppf},a}(z_t,\dd z_{t+1})
 =
 \sum_{s\in\mathcal{S}_t}
 \int
-\alpha_t(s\mid z_t^{\mathrm{ref}},\omega)\,
-\mathcal{N}\!\left(\dd z_{t+1};\,m_t^{(s)}(z_t,\omega),Q_t^{(s)}(\omega)\right)\,
+\alpha_t^{(a)}(s\mid \omega)\,
+\mathcal{N}\!\left(\dd z_{t+1};\,m_t^{(a,s)}(z_t,\omega),Q_t^{(a,s)}(\omega)\right)\,
 \mu_\Omega(\dd\omega).
 \label{eq:mixture_kernel}
 \end{equation}
@@ -299,16 +319,30 @@ If localization is deterministic, then $\alpha_t$ is degenerate at one $s$.
 If regime uncertainty is carried explicitly, then $\alpha_t$ is a nonnegative mixing rule over regimes.
 In either case the integral is with respect to the Gaussian measure of the anticipated-shock proxy, not with respect to the realized shock $\varepsilon_{t+1}$.
 
+In ELB-risk states, the benchmark specification replaces \eqref{eq:mixture_kernel} by a mixed discrete-continuous version,
+\begin{equation}
+\widehat K_{\theta,H}^{\mathrm{pppf},a}(z_t,\dd z_{t+1})
+=
+\sum_{s\in\mathcal{S}_t}\int \sum_{q=1}^{Q_t}
+\alpha_t^{(a)}(s\mid \omega,q)\,\varpi_q\,
+\mathcal{N}\!\left(\dd z_{t+1};\,m_t^{(a,s,q)}(z_t,\omega),Q_t^{(a,s,q),\mathrm{res}}(\omega)\right)
+\mu_\Omega(\dd\omega),
+\label{eq:mixture_kernel_kink}
+\end{equation}
+where the sum over $q$ approximates the law of the realized current innovation near the kink.
+Equation \eqref{eq:mixture_kernel_kink} still defines a nonnegative probability mixture when $\varpi_q\ge 0$ and the regime weights are nonnegative.
+
 We approximate the integral numerically by a $K$-node rule:
 \begin{equation}
-\widehat K_{\theta,H,K}^{\mathrm{pppf}}(z_t,\dd z_{t+1})
+\widehat K_{\theta,H,K}^{\mathrm{pppf},a}(z_t,\dd z_{t+1})
 =
-\sum_{k=1}^K \sum_{s\in\mathcal{S}_t}
-\tilde w_t^{(s,k)}
-\mathcal{N}\!\left(\dd z_{t+1};\,m_t^{(s)}(z_t,\omega^{(k)}),Q_t^{(s)}(\omega^{(k)})\right),
+\sum_{k=1}^K \sum_{s\in\mathcal{S}_t}\sum_{q=1}^{Q_t}
+\tilde w_t^{(a,s,k,q)}
+\mathcal{N}\!\left(\dd z_{t+1};\,m_t^{(a,s,q)}(z_t,\omega^{(k)}),Q_t^{(a,s,q),\mathrm{res}}(\omega^{(k)})\right),
 \label{eq:quadrature_kernel}
 \end{equation}
-where $\tilde w_t^{(s,k)}\ge 0$ and $\sum_{s,k}\tilde w_t^{(s,k)}=1$ when the nodes are used as a probability mixture.
+where $\tilde w_t^{(a,s,k,q)}\ge 0$ and $\sum_{s,k,q}\tilde w_t^{(a,s,k,q)}=1$ when the nodes are used as a probability mixture.
+In smooth regions the index $q$ is degenerate and \eqref{eq:quadrature_kernel} reduces to the Gaussian-closure case.
 When the quadrature rule has signed weights, \eqref{eq:quadrature_kernel} is still a valid deterministic quadrature formula but not a sampling distribution.
 
 \subsection{Sigma points as deterministic ``anticipated shock'' draws}
@@ -320,23 +354,24 @@ If $d$ is large, positive-weight quadrature becomes too expensive for mixture fi
 \section{Discrete localization and ``globalization'' of the approximation}
 \label{sec:localization}
 
-Quadrature refinement controls only the numerical integration error in \eqref{eq:mixture_kernel}.
+Quadrature refinement controls only the numerical integration error in \eqref{eq:mixture_kernel} and \eqref{eq:mixture_kernel_kink}.
 It does not repair bias from horizon truncation, terminal conditions, anchor reuse, or linearization across a kink.
-Those errors are controlled, if at all, by the localization device.
+Those errors require separate choices about anchor localization, regime handling, and, near the ELB, the closure used for the realized current innovation.
 
 \subsection{Localization index: partition cells or regime/binding patterns}
 
-Two cases matter.
-In the first, $s_t$ indexes a partition of the state space with an anchor in each cell.
-Then PPPF becomes a piecewise local approximation: within each cell, one solves the finite-horizon system at the anchor and transports the resulting Jacobian to nearby states.
-Under ordinary smoothness conditions, refinement of the partition can reduce the local-linearization error away from kinks.
+Two distinct localization problems matter.
+The first concerns anchors.
+If a single shared anchor is used, the local affine correction may be transported too far across the filtering distribution.
+Clustered anchors provide a middle ground: they partition the particle cloud into a small number of deterministic groups and attach one path solve and Jacobian block to each group.
+Per-particle anchors eliminate anchor-reuse error but can be prohibitively expensive.
 
-In the second, $s_t$ encodes a regime or binding pattern for an occasionally binding constraint.
+The second problem concerns the regime or binding pattern of an occasionally binding constraint.
 This is the economically relevant case for ELB models.
 The correct object to differentiate is not the max operator itself but the smooth equilibrium system conditional on a regime.
 OccBin \citep{GuerrieriIacoviello2015} implements a hard regime choice.
-PPPF allows either hard regime choice or a small regime mixture near the boundary.
-The latter is the relevant refinement device at a kink, because no single Taylor expansion spans both sides of the constraint.
+PPPF can instead carry a small bind/slack mixture near the boundary.
+Even that is not enough when the realized current innovation itself straddles the kink, which is why the benchmark introduces the discrete current-shock mixture in ELB-risk states.
 
 \subsection{Approximation taxonomy}
 
@@ -351,16 +386,16 @@ The right comparison is always between neighboring layers in the construction, n
 Approximation axis & Exact object being replaced & Computable surrogate & Main error mechanism \\
 \midrule
 Finite horizon and terminal condition & Infinite-horizon rational-expectations equilibrium kernel $K_\theta$ & Kernel induced by the $H$-period stacked solve with a terminal condition & Truncation of future expectations and terminal misspecification \\
-Expectation approximation & Finite-horizon kernel with exact integration over future shocks & Kernel based on low-dimensional proxy $\omega_t$ integrated with respect to $\mu_\Omega$ & Omitted future uncertainty or poorly chosen low-dimensional proxy \\
-Local linearization & Finite-horizon path solve conditional on $(\omega_t,s_t)$ & Affine-Gaussian component \eqref{eq:cond_gauss}--\eqref{eq:cond_cov} & Taylor remainder and, if used, anchor-reuse error \\
-Localization and regime handling & Smooth branch selected by the true state or true regime law & Partition-based localization or explicit regime mixture over $s_t$ & Misclassified cell or regime, especially near kinks and OBC boundaries \\
+Expectation approximation & Finite-horizon kernel with exact integration over future shocks and exact local treatment of the current innovation law & Kernel based on low-dimensional proxy $\omega_t$ integrated with respect to $\mu_\Omega$, plus discrete current-shock cubature when activated near a kink & Omitted future uncertainty, poorly chosen shock proxy, or an inaccurate closure of the realized current innovation \\
+Local linearization & Finite-horizon path solve conditional on $(\omega_t,s_t)$ or $(\omega_t,s_t,q_t)$ & Locally affine component \eqref{eq:cond_gauss} or its fixed-current-shock analogue near the ELB & Taylor remainder and, conditional on the chosen anchor, linearization error \\
+Localization and regime handling & State-specific local reference point and regime law & Shared, clustered, or per-particle anchors together with explicit regime selection or regime mixtures over $s_t$ & Anchor-reuse error, cell misclassification, or regime misclassification, especially near kinks and OBC boundaries \\
 \bottomrule
 \end{tabular}
 \caption{Four core approximation axes in PPPF. Quadrature refinement changes only the expectation-approximation layer unless the localization scheme is also refined.}
 \label{tab:approx_taxonomy}
 \end{table}
 
-The NK implementation below fixes one additional approximation that is not part of the core PPPF transition design: the observed interest rate is updated with a moment-projected censored-Gaussian measurement rather than an exact non-Gaussian filter.
+The NK benchmark holds fixed one additional approximation that is not part of the core PPPF transition design: the observed interest rate is updated with a moment-projected censored-Gaussian measurement rather than an exact non-Gaussian filter.
 That measurement approximation is held fixed across the PPPF ablations, so the reported differences are still informative about the transition-side errors summarized in Table~\ref{tab:approx_taxonomy}.
 
 \section{Filtering and likelihood evaluation}
@@ -368,9 +403,9 @@ That measurement approximation is held fixed across the PPPF ablations, so the r
 
 \subsection{PPPF-mixture-RBPF recursion}
 
-Under \eqref{eq:quadrature_kernel}, the approximate transition can be written as a discrete mixture of affine-Gaussian components:
+Conditional on an anchor group $a_t$, the approximate transition can be written as a discrete mixture of affine-Gaussian components:
 \[
-z_{t+1}\mid (z_t,j_t=j)
+z_{t+1}\mid (z_t,a_t,j_t=j)
 \approx
 A_t^{(j)} z_t + a_t^{(j)} + \xi_{t+1}^{(j)},
 \qquad
@@ -385,15 +420,19 @@ The PPPF recursion is as follows.
 
 \begin{enumerate}[leftmargin=*, itemsep=3pt]
 \item Initialize $N$ particles with $(\mu_0^{(i)},P_0^{(i)},W_0^{(i)})$, where $W_0^{(i)}=1/N$.
-\item For each date $t=1,\ldots,T$, choose an anchor construction.
-In the shared-anchor version,
+\item For each date $t=1,\ldots,T$, construct anchor groups.
+In the shared-anchor version there is one group and
 \[
 z_t^{\mathrm{ref}}=\sum_{i=1}^N W_{t-1}^{(i)}\mu_{t-1}^{(i)}.
 \]
-In the per-particle version, $z_t^{\mathrm{ref},(i)}=\mu_{t-1}^{(i)}$.
-\item For each required anchor and each admissible index $j=(s,k)$, solve the stacked system \eqref{eq:stacked_system} at $(z_t^{\mathrm{ref}},\omega^{(k)},s)$, compute $A_t^{(j)}$, $a_t^{(j)}$, and $Q_t^{(j)}$, and form the nonnegative mixture weights $\tilde w_t^{(j)}$.
+In the clustered-anchor version there are groups $a=1,\ldots,A_t$ with anchors $z_t^{\mathrm{ref},a}$ constructed from deterministic summaries of the previous-period particle cloud.
+In the per-particle version, each particle forms its own singleton group with anchor $z_t^{\mathrm{ref},i}=\mu_{t-1}^{(i)}$.
+\item For each required anchor group and each admissible index $j=(s,k,q)$, solve the stacked system \eqref{eq:stacked_system} at $(z_t^{\mathrm{ref},a},\omega^{(k)},s)$ and compute the corresponding component parameters.
+In smooth regions $q$ is degenerate and the component covariance is the Gaussian closure \eqref{eq:cond_cov}.
+In ELB-risk regions, build a positive-weight discrete mixture over current-shock nodes and attach the resulting fixed-current-shock local components to the same anchor.
+Form the nonnegative anchor-specific mixture weights $\tilde w_t^{(a,j)}$.
 If signed quadrature is used, this step cannot feed a sampling-based RBPF and must instead be implemented by deterministic branching.
-\item For each particle $i$ and each candidate component $j$, run the Gaussian predict step
+\item For each particle $i$, assign its deterministic anchor group $a(i)$ and, for each candidate component $j$ in that group's mixture, run the Gaussian predict step
 \[
 (\mu_{t|t-1}^{(i,j)},P_{t|t-1}^{(i,j)})
 =
@@ -405,9 +444,9 @@ and evaluate the predictive density
 \ell_t^{(i)}(j)=p(y_t\mid y_{1:t-1},j,\mu_{t-1}^{(i)},P_{t-1}^{(i)}).
 \]
 \item Choose an index proposal $q_t^{(i)}(j)$.
-Two useful choices are the prior mixture $q_t^{(i)}(j)=\tilde w_t^{(j)}$ and the auxiliary proposal
+Two useful choices are the prior mixture $q_t^{(i)}(j)=\tilde w_t^{(a(i),j)}$ and the auxiliary proposal
 \[
-q_t^{(i)}(j)\propto \tilde w_t^{(j)}\,\ell_t^{(i)}(j),
+q_t^{(i)}(j)\propto \tilde w_t^{(a(i),j)}\,\ell_t^{(i)}(j),
 \]
 which conditions on the current observation.
 \item Sample $j_t^{(i)}\sim q_t^{(i)}(\cdot)$ and update the particle weight by
@@ -416,16 +455,16 @@ W_t^{(i)}
 \propto
 W_{t-1}^{(i)}\,
 \ell_t^{(i)}(j_t^{(i)})\,
-\frac{\tilde w_t^{(j_t^{(i)})}}{q_t^{(i)}(j_t^{(i)})}.
+\frac{\tilde w_t^{(a(i),j_t^{(i)})}}{q_t^{(i)}(j_t^{(i)})}.
 \label{eq:rbpf_weight}
 \end{equation}
-Under the auxiliary proposal $q_t^{(i)}(j)\propto \tilde w_t^{(j)}\ell_t^{(i)}(j)$, the correction factor in \eqref{eq:rbpf_weight} collapses to the normalizing constant $\sum_j \tilde w_t^{(j)}\ell_t^{(i)}(j)$.
+Under the auxiliary proposal $q_t^{(i)}(j)\propto \tilde w_t^{(a(i),j)}\ell_t^{(i)}(j)$, the correction factor in \eqref{eq:rbpf_weight} collapses to the normalizing constant $\sum_j \tilde w_t^{(a(i),j)}\ell_t^{(i)}(j)$.
 \item Conditional on the sampled component, carry out the measurement update and obtain $(\mu_t^{(i)},P_t^{(i)})$.
 \item Normalize the weights, update the log-likelihood estimate by the log normalizing constant, compute ESS, and resample if ESS falls below a chosen threshold.
 \end{enumerate}
 
 The computational bottleneck is the number of component evaluations per date, not the Kalman algebra itself.
-That is why the dimension of $\omega_t$, the number of regimes carried near a kink, and the use of shared versus per-particle anchors are first-order design choices rather than implementation details.
+That is why the dimension of $\omega_t$, the number of regimes carried near a kink, and the use of shared versus per-particle anchors are first-order design choices rather than incidental numerical details.
 
 \subsection{Mixture handling and quadrature choices}
 
@@ -438,7 +477,7 @@ This distinction is especially important when the quadrature rule comes from sig
 Unscented-transform formulas are often presented as deterministic quadrature rules for moment calculation and may use negative weights.
 Such rules are admissible for deterministic integration but inadmissible for a sampling interpretation.
 If the paper speaks of ``sampling quadrature nodes,'' then the corresponding weights must be nonnegative.
-The benchmark implementation below enforces this restriction explicitly.
+The benchmark calculations enforce this restriction explicitly.
 
 \section{Approximation theory: kernel, filter, and likelihood}
 \label{sec:theory}
@@ -456,7 +495,7 @@ The quadrature rules $(\omega^{(k)},w_k)_{k=1}^K$ are consistent for the Gaussia
 \end{assumption}
 
 \begin{proposition}[Quadrature refinement]
-Assume that for each fixed $z$ the maps $\omega\mapsto m_t^{(s)}(z,\omega)$, $\omega\mapsto Q_t^{(s)}(\omega)$, and $\omega\mapsto \alpha_t(s\mid z_t^{\mathrm{ref}},\omega)$ are continuous and dominated by an integrable envelope.
+Assume that, for each fixed $z$ and each fixed anchor group, the component means, component covariances, and nonnegative mixture weights entering \eqref{eq:quadrature_kernel} are continuous functions of the numerical integration variables and are dominated by an integrable envelope.
 Then, for every bounded continuous test function $\psi$,
 \[
 \int \psi(z')\,\widehat K_{\theta,H,K}^{\mathrm{pppf}}(z,\dd z')
@@ -567,7 +606,7 @@ The example is useful because a high-accuracy likelihood can be computed by fine
 \section{Benchmark: a New Keynesian model with an ELB}
 \label{sec:nk_benchmark}
 
-This section specifies the benchmark used in the reference implementation.
+This section specifies the benchmark environment used for the numerical comparison.
 The benchmark is intentionally narrow: it is designed to diagnose where PPPF bias enters in a simple ELB environment, not to establish dominance over every alternative solution method.
 
 \subsection{Core equilibrium conditions}
@@ -597,15 +636,15 @@ y_t=(\pi_t^{\mathrm{obs}},x_t^{\mathrm{obs}},i_t^{\mathrm{obs}})^\top.
 \]
 Inflation and the output gap are measured linearly with Gaussian noise.
 The policy rate is measured as a lower-censored function of $z_t$ with Gaussian observation error.
-Consequently, the transition-side RBPF is exact conditional on the discrete index only for the first two measurements; the third measurement is handled by a Gaussian moment projection in the implementation.
+Consequently, the transition-side RBPF is exact conditional on the discrete index only for the first two measurements; the third measurement is handled by a Gaussian moment projection in the benchmark calculations.
 
 \subsection{Competing methods}
 
 The benchmark compares three likelihood-evaluation strategies that differ in how they approximate the transition kernel near the ELB kink and how they control Monte Carlo variance.
 First, an OccBin-style piecewise-linear extended-path solution \citep{GuerrieriIacoviello2015} is embedded in a bootstrap particle filter.
-Second, the repo includes a PLC-inspired baseline that interpolates the global discretized benchmark and filters only the exogenous state with an observation-informed Gaussian proposal.
+Second, the benchmark also considers a PLC-inspired baseline that interpolates the global discretized benchmark and filters only the exogenous state with an observation-informed Gaussian proposal.
 This is best interpreted as a PLC/COPF-style comparator, not as a line-by-line reimplementation of \citet{AruobaCubaBordaHigaFloresSchorfheideVillalvazo2021}.
-Third, PPPF constructs a Gaussian-mixture transition by integrating over a short-horizon anticipated-shock proxy and, near the ELB, by either fixing or mixing over a small number of regime assignments.
+Third, PPPF constructs an anchor-specific Gaussian-mixture transition by integrating over a short-horizon anticipated-shock proxy and, in ELB-risk states, by replacing the single-Gaussian closure of the realized current innovation with a small positive-weight discrete mixture.
 
 \subsection{Proposed evaluation metrics}
 
@@ -626,6 +665,7 @@ We solve the discretized global benchmark (Tauchen grid) and simulate a dataset 
 For likelihood evaluation we use $N=256$ particles and repeat each filter run $N_{\mathrm{rep}}=30$ times with different random seeds to measure Monte Carlo variability.
 
 To attribute PPPF likelihood bias in Table~\ref{tab:nk_summary} to specific approximation steps, the ablations vary the quadrature resolution $K$ (including $K=1$ certainty equivalence), the horizon and terminal condition, the degree of anchor reuse, and the regime treatment at the ELB boundary.
+The direct IRF diagnostic in Figure~\ref{fig:nk_irf} separately evaluates the one-step current-shock closure used near ELB-risk states.
 Reporting the mean log-likelihood gap to the discretized benchmark under these perturbations turns the bias--variance tradeoff into an explicit bias attribution exercise.
 
 The discretized global benchmark induces a finite-state hidden Markov model for the exogenous state.
@@ -684,9 +724,9 @@ We then turn to the NK--ELB benchmark.
 In what follows, OccBin-PF denotes OccBin coupled with a bootstrap particle filter, PPPF-RBPF denotes the PPPF mixture kernel coupled with a Rao--Blackwellized particle filter, and PLC-COPF denotes the PLC-inspired comparator described above.
 Table~\ref{tab:nk_summary} reports summary statistics from the benchmark comparison.
 We simulate data from the discretized global benchmark and compute its exact likelihood by the HMM forward algorithm described above.
-Relative to OccBin-PF, PPPF-RBPF delivers much higher ESS and substantially lower Monte Carlo variability of the likelihood estimator, consistent with the variance-reduction role of Rao--Blackwellization.
-The PPPF likelihood nevertheless lies farther from the benchmark than the OccBin likelihood in this calibration.
-That pattern is the central empirical message: the RBPF controls Monte Carlo variance effectively, but the transition approximation remains the dominant source of error.
+Relative to OccBin-PF, PPPF-RBPF delivers much higher ESS and slightly lower cross-run dispersion of the likelihood estimator, which is consistent with the variance-reduction role of Rao--Blackwellization.
+Its mean long-sample log-likelihood nevertheless remains well below the exact discretized benchmark, and in this calibration it also remains below OccBin-PF.
+The main message of Table~\ref{tab:nk_summary} is therefore variance reduction without commensurate transition accuracy.
 
 \begin{table}[t]
 \centering
@@ -696,10 +736,10 @@ That pattern is the central empirical message: the RBPF controls Monte Carlo var
 \toprule
 Method & Mean loglik & SD loglik & Mean time (ms) & SD time (ms) & Mean ESS \\
 \midrule
-Benchmark (exact) & 2495.0 & 0.0 & 7.8 & 0.0 & -- \\
-OccBin-PF & 2199.4 & 8.9 & 104.2 & 1.2 & 27.6 \\
-PPPF-RBPF & 2105.2 & 1.9 & 294.7 & 12.0 & 179.3 \\
-PLC-COPF & 2405.6 & 1.3 & 18.6 & 0.3 & 160.8 \\
+Benchmark (exact) & 2495.0 & 0.0 & 13.3 & 0.0 & -- \\
+OccBin-PF & 2199.4 & 8.9 & 173.6 & 7.2 & 27.6 \\
+PPPF-RBPF & 2120.5 & 7.1 & 1194.2 & 70.7 & 161.1 \\
+PLC-COPF & 2405.6 & 1.3 & 30.5 & 2.7 & 160.8 \\
 \bottomrule
 \end{tabular}
 \caption{NK--ELB benchmark: repeated log-likelihood estimates on fixed data across $N_{\mathrm{rep}}=30$ filter runs, with $T=250$ and $N=256$ particles. The benchmark likelihood is exact for the discretized model.}
@@ -708,9 +748,11 @@ PLC-COPF & 2405.6 & 1.3 & 18.6 & 0.3 & 160.8 \\
 
 To diagnose which approximation components drive PPPF bias in this calibration, Table~\ref{tab:nk_ablations} reports a one-factor-at-a-time ablation suite holding fixed the simulated dataset and (except where noted) the particle count and number of repeated filter runs.
 The reported gap is the PPPF log-likelihood minus the exact benchmark likelihood for the discretized model, so it isolates differences in the approximate transition kernel rather than Monte Carlo variability of the particle filter.
-The ablations show that the ELB regime treatment is the first-order issue in this specification.
-Fixing the first-period binding decision across quadrature nodes creates a large additional likelihood gap.
-A small bind/slack mixture at the boundary materially improves the likelihood, while increasing quadrature resolution without improving regime handling has a much smaller effect.
+Several facts stand out.
+Moving from a single shared anchor to clustered anchors materially improves the likelihood, which confirms that anchor reuse is quantitatively important near the ELB.
+By contrast, certainty equivalence, deeper anticipated-shock horizons with the same local closure, and a shorter horizon all worsen the gap.
+Fixing the first-period binding decision across nodes is especially costly, while allowing a small bind/slack mixture largely reverses that deterioration.
+The table therefore points to anchor localization and ELB regime handling as the main determinants of the long-sample PPPF likelihood in this benchmark.
 
 \begin{table}[t]
 \centering
@@ -721,10 +763,10 @@ A small bind/slack mixture at the boundary materially improves the likelihood, w
 \label{tab:nk_ablations}
 \end{table}
 
-Figure~\ref{fig:nk_irf} reports impulse responses near the ELB kink, comparing OccBin and PPPF to a discretized global stochastic benchmark.
-Under this calibration, OccBin tracks the global benchmark more closely than PPPF in IRF RMSE, while PPPF exhibits substantially higher ESS in likelihood evaluation.
-Taken together with Table~\ref{tab:nk_ablations}, this implies that the low PPPF likelihood in Table~\ref{tab:nk_summary} reflects approximation bias rather than particle-filter noise.
-The dominant practical lever is therefore better kink and regime handling, not more particles.
+Figure~\ref{fig:nk_irf} is best read as a diagnostic for the direct transition approximation near the ELB.
+Under the ELB-risk current-shock mixture described above, PPPF no longer exhibits the most obvious impact-response pathology generated by a single-Gaussian closure of that shock.
+The resulting PPPF IRF is still noticeably more contractionary than the discretized global benchmark and remains less accurate than the OccBin path in this calibration.
+Taken together with Table~\ref{tab:nk_summary}, this implies that the remaining PPPF likelihood gap reflects transition-side approximation error rather than particle-filter noise.
 
 \begin{figure}[t]
 \centering
@@ -747,9 +789,9 @@ Its output depends on a horizon choice, a proxy for future uncertainty, a local-
 Once those layers are stated explicitly, the role of the RBPF becomes clear: it reduces Monte Carlo variance conditional on the approximate transition, but it does not remove transition-side bias.
 
 The ELB benchmark shows both the promise and the limitation of the approach.
-PPPF can stabilize likelihood estimation substantially relative to a bootstrap filter, but in the current implementation the dominant bias comes from kink handling and, to a lesser extent, from finite-horizon and anchor-reuse effects.
-The most credible path forward is therefore not a larger particle count.
-It is a better local approximation near the ELB boundary, a genuinely low-dimensional anticipated-shock proxy that still captures the relevant curvature, and benchmark designs that report which layer of \eqref{eq:kernel_decomp} is responsible for the remaining likelihood gap.
+Rao--Blackwellization raises ESS sharply, clustered anchors improve likelihood relative to a single shared anchor, and an ELB-aware discrete current-shock mixture repairs the most obvious direct-IRF pathology created by a single-Gaussian closure of the realized innovation.
+But those gains do not eliminate the main quantitative problem: in the long-sample benchmark PPPF remains far from the discretized global likelihood.
+The most credible path forward is therefore further work on the transition approximation near the ELB rather than a claim that PPPF is already ready for structural estimation.
 
 \appendix
 
@@ -813,7 +855,7 @@ This yields a bona fide probability mixture and is exact for Gaussian polynomial
 
 Equations \eqref{eq:nk_is}--\eqref{eq:nk_pc} arise from household Euler equations and Calvo price setting under standard assumptions; see \citet{Woodford2003} for a textbook derivation.
 The ELB \eqref{eq:elb} is the occasionally binding constraint that motivates the regime index.
-In the benchmark implementation the latent state is $z_t=(x_t,\pi_t,r_t^n,\nu_t)^\top$ and the observed policy rate is obtained from \eqref{eq:taylor}--\eqref{eq:elb} rather than treated as an independent state variable.
+In the benchmark specification the latent state is $z_t=(x_t,\pi_t,r_t^n,\nu_t)^\top$ and the observed policy rate is obtained from \eqref{eq:taylor}--\eqref{eq:elb} rather than treated as an independent state variable.
 
 \begin{thebibliography}{99}
 

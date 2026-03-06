@@ -1,0 +1,37 @@
+{
+  "config": {
+    "T": 250,
+    "N": 256,
+    "R": 30
+  },
+  "methods": {
+    "global_discrete_exact": {
+      "mean_loglik": 2495.02,
+      "sd_loglik": 0,
+      "mean_runtime_ms": 13.3007,
+      "sd_runtime_ms": 0,
+      "mean_ess": -1
+    },
+    "occbin_bootstrap_pf": {
+      "mean_loglik": 2199.35,
+      "sd_loglik": 8.87926,
+      "mean_runtime_ms": 173.647,
+      "sd_runtime_ms": 7.16618,
+      "mean_ess": 27.6219
+    },
+    "plc_copf_pf": {
+      "mean_loglik": 2405.62,
+      "sd_loglik": 1.25437,
+      "mean_runtime_ms": 30.4884,
+      "sd_runtime_ms": 2.67871,
+      "mean_ess": 160.778
+    },
+    "pppf_mixture_rbpf": {
+      "mean_loglik": 2120.47,
+      "sd_loglik": 7.08961,
+      "mean_runtime_ms": 1194.22,
+      "sd_runtime_ms": 70.6648,
+      "mean_ess": 161.075
+    }
+  }
+}
