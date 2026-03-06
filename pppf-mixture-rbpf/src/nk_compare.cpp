@@ -29,15 +29,16 @@ struct RunResult {
   std::vector<double> ess;
 };
 
+enum class AnchorMode { Shared = 0, Clustered = 1, PerParticle = 2 };
+
 struct NkExperimentConfig {
   models::NkParams p;
   std::filesystem::path out_dir;
   std::uint64_t seed_data = 0;
   double shock_eps_r_irf = -2.0;
   int omega_horizon = 1;  // number of anticipated innovations at t+2.. included in omega (per shock)
+  AnchorMode anchor_mode = AnchorMode::Shared;
 };
-
-enum class AnchorMode { Shared = 0, PerParticle = 1 };
 
 enum class PppfIMeasMode { Censored = 0, Linear = 1 };
 
@@ -50,6 +51,65 @@ struct PppfOptions {
   PppfIMeasMode i_meas_mode = PppfIMeasMode::Censored;
   models::PppfRegimeMode regime_mode = models::PppfRegimeMode::EndogenousByNode;
 };
+
+double nk_shadow_rate_gap(const models::NkParams& p, const Eigen::Vector4d& z) {
+  const double i_shadow = p.i_ss + p.phi_pi * z(1) + p.phi_x * z(0) + z(3);
+  return i_shadow - p.i_lower;
+}
+
+double nk_elb_risk_score(const models::NkParams& p, const Eigen::Vector4d& z,
+                         models::PppfOmegaMode omega_mode) {
+  const double gap_now = nk_shadow_rate_gap(p, z);
+  const Eigen::VectorXd omega0 = Eigen::VectorXd::Zero(0);
+  const Eigen::Vector4d z_det =
+      models::nk_transition_markov_anticipated(p, z, 0.0, 0.0, omega0, omega_mode);
+  const double gap_det = nk_shadow_rate_gap(p, z_det);
+  return std::min(gap_now, gap_det);
+}
+
+int nk_elb_risk_group(const models::NkParams& p, const Eigen::Vector4d& z,
+                      models::PppfOmegaMode omega_mode) {
+  const double risk = nk_elb_risk_score(p, z, omega_mode);
+  if (risk <= -0.02) return 0;
+  if (risk <= -0.01) return 1;
+  if (risk <= 0.0) return 2;
+  if (risk <= 0.005) return 3;
+  if (risk <= 0.01) return 4;
+  if (risk <= 0.02) return 5;
+  return 6;
+}
+
+std::vector<int> nk_anchor_groups_elb_risk(const models::NkParams& p,
+                                           const std::vector<Eigen::VectorXd>& means,
+                                           const Eigen::VectorXd& weights,
+                                           models::PppfOmegaMode omega_mode) {
+  const int N = static_cast<int>(means.size());
+  if (weights.size() != N) throw std::invalid_argument("nk_anchor_groups_elb_risk: size mismatch");
+  std::vector<int> groups(N, 6);
+  std::vector<std::pair<double, int>> risky_order;
+  risky_order.reserve(N);
+  double risky_mass = 0.0;
+  for (int i = 0; i < N; ++i) {
+    const double risk = nk_elb_risk_score(p, static_cast<const Eigen::Vector4d&>(means[i]), omega_mode);
+    if (risk > 0.02) continue;
+    risky_order.emplace_back(risk, i);
+    risky_mass += weights(i);
+  }
+  if (risky_order.empty() || risky_mass <= 0.0) return groups;
+
+  std::sort(risky_order.begin(), risky_order.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  double cum = 0.0;
+  int g = 0;
+  for (const auto& [risk, idx] : risky_order) {
+    (void)risk;
+    const double mass_mid = (cum + 0.5 * weights(idx)) / risky_mass;
+    while (g < 5 && mass_mid > static_cast<double>(g + 1) / 6.0) ++g;
+    groups[idx] = g;
+    cum += weights(idx);
+  }
+  return groups;
+}
 
 struct NkLinearCoeffs {
   double a_r = 0.0, a_nu = 0.0;  // x = a_r * r + a_nu * nu
@@ -242,6 +302,15 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
                                const Eigen::Matrix3d& R, std::uint64_t seed, const PppfOptions& opt) {
   util::Rng rng(seed);
   util::Timer timer;
+  const filters::AnchorGroupsFn anchor_groups_fn =
+      (opt.anchor_mode == AnchorMode::Clustered)
+          ? filters::AnchorGroupsFn([&](int /*t*/, const std::vector<Eigen::VectorXd>& z_prev,
+                                        const Eigen::VectorXd& w_norm,
+                                        const Eigen::VectorXd& /*ref_shared*/) {
+              return nk_anchor_groups_elb_risk(p, z_prev, w_norm, opt.omega_mode);
+            })
+          : filters::AnchorGroupsFn();
+  const int num_anchor_groups = (opt.anchor_mode == AnchorMode::Clustered) ? 7 : 1;
 
   const auto mixture_builder = [&](int /*t*/, const Eigen::VectorXd& ref_prev) {
     const Eigen::Vector4d z_ref = ref_prev;
@@ -284,7 +353,7 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
 
   const filters::RbpfDiagnostics diag =
       filters::rbpf(N, mean0, cov0, y, mixture_builder, obs_update, rng, 0.5, opt.optimal_index_proposal,
-                    opt.anchor_mode == AnchorMode::PerParticle);
+                    opt.anchor_mode == AnchorMode::PerParticle, num_anchor_groups, anchor_groups_fn);
 
   RunResult res;
   res.loglik = diag.loglik;
@@ -293,13 +362,12 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
   return res;
 }
 
-void expected_irf_pppf_shared_anchor_mc(const models::NkParams& p, int T, double shock_eps_r,
-                                        int omega_horizon, std::vector<double>* x_out,
-                                        std::vector<double>* pi_out, std::vector<double>* i_out,
-                                        int num_particles = 20000,
-                                        std::uint64_t seed = 20260306ULL) {
-  if (!x_out || !pi_out || !i_out) throw std::invalid_argument("expected_irf_pppf_shared_anchor_mc: null out");
-  if (num_particles <= 0) throw std::invalid_argument("expected_irf_pppf_shared_anchor_mc: num_particles<=0");
+void expected_irf_pppf_anchor_mc(const models::NkParams& p, int T, double shock_eps_r,
+                                 int omega_horizon, AnchorMode anchor_mode, std::vector<double>* x_out,
+                                 std::vector<double>* pi_out, std::vector<double>* i_out,
+                                 int num_particles = 20000, std::uint64_t seed = 20260306ULL) {
+  if (!x_out || !pi_out || !i_out) throw std::invalid_argument("expected_irf_pppf_anchor_mc: null out");
+  if (num_particles <= 0) throw std::invalid_argument("expected_irf_pppf_anchor_mc: num_particles<=0");
 
   util::Rng rng(seed);
   std::vector<Eigen::Vector4d> particles(num_particles, Eigen::Vector4d::Zero());
@@ -315,23 +383,55 @@ void expected_irf_pppf_shared_anchor_mc(const models::NkParams& p, int T, double
       Q += 1e-10 * Eigen::Matrix4d::Identity();
       llt.compute(Q);
       if (llt.info() != Eigen::Success) {
-        throw std::runtime_error("expected_irf_pppf_shared_anchor_mc: Q not PD");
+        throw std::runtime_error("expected_irf_pppf_anchor_mc: Q not PD");
       }
     }
     return mean + llt.matrixL() * rng.normal_vec(4);
   };
 
   for (int t = 0; t < T; ++t) {
-    Eigen::Vector4d z_ref = Eigen::Vector4d::Zero();
-    for (const auto& z : particles) z_ref += z;
-    z_ref /= static_cast<double>(num_particles);
-
     const double eps_mean = (t == 0) ? shock_eps_r : 0.0;
     // For an IRF, the period-0 natural-rate impulse is realized rather than integrated over.
     const double eps_var_r = (t == 0) ? 0.0 : 1.0;
     const double eps_var_nu = (t == 0) ? 0.0 : 1.0;
-    const auto mix = models::build_pppf_mixture(
-        p, z_ref, /*omega_horizon=*/omega_horizon, /*omega_var=*/1.0, eps_mean, eps_var_r, eps_var_nu);
+    Eigen::Vector4d z_ref = Eigen::Vector4d::Zero();
+    for (const auto& z : particles) z_ref += z;
+    z_ref /= static_cast<double>(num_particles);
+
+    statespace::GaussianMixtureTransition mix_shared;
+    std::vector<statespace::GaussianMixtureTransition> mix_groups;
+    std::vector<char> has_group;
+    std::vector<int> particle_group(num_particles, 0);
+
+    mix_shared = models::build_pppf_mixture(p, z_ref, /*omega_horizon=*/omega_horizon, /*omega_var=*/1.0,
+                                            eps_mean, eps_var_r, eps_var_nu);
+    mix_shared.check();
+
+    if (anchor_mode == AnchorMode::Clustered) {
+      mix_groups.resize(7);
+      has_group.assign(7, 0);
+      std::vector<int> group_count(7, 0);
+      std::vector<Eigen::Vector4d> group_ref(7, Eigen::Vector4d::Zero());
+      std::vector<Eigen::VectorXd> particle_means(num_particles);
+      Eigen::VectorXd weights =
+          Eigen::VectorXd::Constant(num_particles, 1.0 / static_cast<double>(num_particles));
+      for (int n = 0; n < num_particles; ++n) particle_means[n] = particles[n];
+      particle_group = nk_anchor_groups_elb_risk(p, particle_means, weights, models::PppfOmegaMode::ROnly);
+      for (int n = 0; n < num_particles; ++n) {
+        const int g = particle_group[n];
+        particle_group[n] = g;
+        ++group_count[g];
+        group_ref[g] += particles[n];
+      }
+      for (int g = 0; g < 7; ++g) {
+        if (group_count[g] == 0) continue;
+        mix_groups[g] = models::build_pppf_mixture(p, group_ref[g] / static_cast<double>(group_count[g]),
+                                                   /*omega_horizon=*/omega_horizon, /*omega_var=*/1.0,
+                                                   eps_mean, eps_var_r, eps_var_nu);
+        mix_groups[g].check();
+        has_group[g] = 1;
+      }
+    }
 
     std::vector<Eigen::Vector4d> next_particles(num_particles);
     double mean_x = 0.0;
@@ -339,8 +439,19 @@ void expected_irf_pppf_shared_anchor_mc(const models::NkParams& p, int T, double
     double mean_i = 0.0;
 
     for (int n = 0; n < num_particles; ++n) {
-      const int k = rng.categorical(mix.weights);
-      const auto& tr = mix.components[k];
+      const statespace::GaussianMixtureTransition* mix = &mix_shared;
+      if (anchor_mode == AnchorMode::PerParticle) {
+        mix_shared = models::build_pppf_mixture(
+            p, particles[n], /*omega_horizon=*/omega_horizon, /*omega_var=*/1.0, eps_mean, eps_var_r,
+            eps_var_nu);
+        mix_shared.check();
+        mix = &mix_shared;
+      }
+      if (anchor_mode == AnchorMode::Clustered && has_group[particle_group[n]]) {
+        mix = &mix_groups[particle_group[n]];
+      }
+      const int k = rng.categorical(mix->weights);
+      const auto& tr = mix->components[k];
       const Eigen::Vector4d mean = tr.A * particles[n] + tr.a;
       next_particles[n] = sample_gaussian(mean, tr.Q);
       mean_x += next_particles[n](0);
@@ -545,7 +656,7 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
       opt.omega_var = 1.0;
       opt.omega_horizon = cfg.omega_horizon;
       opt.optimal_index_proposal = true;
-      opt.anchor_mode = AnchorMode::Shared;
+      opt.anchor_mode = cfg.anchor_mode;
       opt.i_meas_mode = PppfIMeasMode::Censored;
       opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
       const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, opt);
@@ -627,8 +738,8 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
   // PPPF expected IRF: simulate the approximate PPPF transition kernel directly.
   // This is more comparable to the stochastic global benchmark than collapsing the mixture
   // recursion to a single Gaussian mean/covariance process at each step.
-  expected_irf_pppf_shared_anchor_mc(p, Tirf, shock_eps_r, cfg.omega_horizon, &irf_x_pppf, &irf_pi_pppf,
-                                     &irf_i_pppf);
+  expected_irf_pppf_anchor_mc(p, Tirf, shock_eps_r, cfg.omega_horizon, cfg.anchor_mode, &irf_x_pppf,
+                              &irf_pi_pppf, &irf_i_pppf);
 
   // Global stochastic solution on a discrete Markov chain (state-space, expectation-consistent).
   models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
@@ -949,7 +1060,17 @@ struct AblationRow {
   double mean_runtime_ms = 0.0;
 };
 
-std::string to_string(AnchorMode m) { return (m == AnchorMode::Shared) ? "shared" : "per_particle"; }
+std::string to_string(AnchorMode m) {
+  switch (m) {
+    case AnchorMode::Shared:
+      return "shared";
+    case AnchorMode::Clustered:
+      return "clustered";
+    case AnchorMode::PerParticle:
+      return "per_particle";
+  }
+  return "unknown";
+}
 std::string to_string(PppfIMeasMode m) { return (m == PppfIMeasMode::Censored) ? "censored" : "linear"; }
 std::string to_string(models::PppfRegimeMode m) {
   switch (m) {
@@ -1038,11 +1159,18 @@ void run_nk_elb_ablations(const models::NkParams& p_base, int T, int N, int R, c
   base.horizon = 20;
   base.opt.omega_horizon = 1;
   base.opt.omega_var = 1.0;
-  base.opt.anchor_mode = AnchorMode::Shared;
+  base.opt.anchor_mode = AnchorMode::Clustered;
   base.opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
   base.opt.i_meas_mode = PppfIMeasMode::Censored;
   base.opt.optimal_index_proposal = true;
   cases.push_back(base);
+
+  {
+    CaseSpec c = base;
+    c.name = "Shared anchor";
+    c.opt.anchor_mode = AnchorMode::Shared;
+    cases.push_back(c);
+  }
 
   {
     CaseSpec c = base;
@@ -1178,6 +1306,7 @@ struct CliOptions {
   int R = 30;
   int horizon = 20;
   int omega_horizon = 1;
+  AnchorMode anchor_mode = AnchorMode::Clustered;
   std::uint64_t seed_data = 20260113ULL;
   std::uint64_t seed_sanity = 20260218ULL;
   std::filesystem::path out_dir = "output/nk";
@@ -1207,6 +1336,17 @@ CliOptions parse_args(int argc, char** argv) {
       opt.horizon = std::stoi(need(a));
     } else if (a == "--omega_horizon") {
       opt.omega_horizon = std::stoi(need(a));
+    } else if (a == "--anchor") {
+      const std::string v = need(a);
+      if (v == "shared") {
+        opt.anchor_mode = AnchorMode::Shared;
+      } else if (v == "clustered") {
+        opt.anchor_mode = AnchorMode::Clustered;
+      } else if (v == "per_particle") {
+        opt.anchor_mode = AnchorMode::PerParticle;
+      } else {
+        throw std::invalid_argument("unknown anchor mode: " + v);
+      }
     } else if (a == "--seed_data") {
       opt.seed_data = static_cast<std::uint64_t>(std::stoull(need(a)));
     } else if (a == "--seed_sanity") {
@@ -1223,7 +1363,7 @@ CliOptions parse_args(int argc, char** argv) {
       opt.run_sanity = false;
     } else if (a == "--help" || a == "-h") {
       std::cout << "Usage: nk_compare [--mode baseline|ablations] [--T int] [--N int] [--R int]\\n";
-      std::cout << "                 [--horizon int] [--omega_horizon int] [--out_dir path]\\n";
+      std::cout << "                 [--horizon int] [--omega_horizon int] [--anchor shared|clustered|per_particle] [--out_dir path]\\n";
       std::cout << "                 [--out_dir_abl path] [--paper_table path]\\n";
       std::cout << "                 [--seed_data uint64] [--seed_sanity uint64] [--out_dir_sanity path] [--no_sanity]\\n";
       std::exit(0);
@@ -1270,6 +1410,7 @@ int main(int argc, char** argv) {
       cfg1.seed_data = cli.seed_data;
       cfg1.shock_eps_r_irf = -2.0;
       cfg1.omega_horizon = cli.omega_horizon;
+      cfg1.anchor_mode = cli.anchor_mode;
       run_nk_experiment(cfg1, cli.T, cli.N, cli.R, Rm);
 
       if (cli.run_sanity) {
