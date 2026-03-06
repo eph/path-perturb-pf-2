@@ -1,4 +1,6 @@
 #include "filters/resampling.hpp"
+#include "solvers/newton.hpp"
+#include "statespace/gaussian_mixture.hpp"
 #include "util/io.hpp"
 #include "util/rng.hpp"
 #include "util/stats.hpp"
@@ -36,6 +38,7 @@ struct CliOptions {
   int R = 20;
   int Nk = 121;
   int Nz = 9;
+  int horizon = 4;
   double k_width = 0.45;
   double z_width_sd = 3.0;
   double meas_sd = 0.02;
@@ -77,6 +80,8 @@ struct PfDiagnostics {
   std::vector<double> ess;
 };
 
+enum class PppfMode { CE, Q5 };
+
 CliOptions parse_args(int argc, char** argv) {
   CliOptions opt;
   for (int i = 1; i < argc; ++i) {
@@ -95,6 +100,8 @@ CliOptions parse_args(int argc, char** argv) {
       opt.Nk = std::stoi(need(a));
     } else if (a == "--Nz") {
       opt.Nz = std::stoi(need(a));
+    } else if (a == "--horizon") {
+      opt.horizon = std::stoi(need(a));
     } else if (a == "--k_width") {
       opt.k_width = std::stod(need(a));
     } else if (a == "--z_width_sd") {
@@ -106,7 +113,7 @@ CliOptions parse_args(int argc, char** argv) {
     } else if (a == "--out_dir") {
       opt.out_dir = need(a);
     } else if (a == "-h" || a == "--help") {
-      std::cout << "Usage: rbc_compare [--T int] [--N int] [--R int] [--Nk int] [--Nz int] "
+      std::cout << "Usage: rbc_compare [--T int] [--N int] [--R int] [--Nk int] [--Nz int] [--horizon int] "
                    "[--k_width double] [--z_width_sd double] [--meas_sd double] "
                    "[--seed_data uint64] [--out_dir path]\n";
       std::exit(0);
@@ -117,6 +124,7 @@ CliOptions parse_args(int argc, char** argv) {
   if (opt.T <= 0 || opt.N <= 0 || opt.R <= 0) throw std::invalid_argument("T,N,R must be positive");
   if (opt.Nk < 31 || opt.Nk % 2 == 0) throw std::invalid_argument("Nk must be odd and >= 31");
   if (opt.Nz < 5) throw std::invalid_argument("Nz must be >= 5");
+  if (opt.horizon < 2) throw std::invalid_argument("horizon must be >= 2");
   if (!(opt.k_width > 0.0) || !(opt.z_width_sd > 0.0) || !(opt.meas_sd > 0.0)) {
     throw std::invalid_argument("widths and meas_sd must be positive");
   }
@@ -368,6 +376,112 @@ Eigen::MatrixXd build_discrete_transition(const RbcSolution& sol) {
   return P;
 }
 
+std::vector<double> build_future_z_path(const RbcSolution& sol, double z0, const std::vector<double>& omega_path,
+                                        int horizon) {
+  std::vector<double> z(horizon + 1, 0.0);
+  z[0] = z0;
+  for (int h = 0; h < horizon; ++h) {
+    const double eps = (h < static_cast<int>(omega_path.size())) ? omega_path[h] : 0.0;
+    z[h + 1] = sol.p.rho * z[h] + sol.p.sigma * eps;
+  }
+  return z;
+}
+
+double solve_rbc_path_k1(const RbcSolution& sol, double k0, double z0, const std::vector<double>& omega_path,
+                         int horizon) {
+  const std::vector<double> z_path = build_future_z_path(sol, z0, omega_path, horizon);
+  Eigen::VectorXd x(horizon);
+  double k_cur = k0;
+  for (int h = 0; h < horizon; ++h) {
+    x(h) = interp_policy(sol, k_cur, z_path[h]);
+    k_cur = x(h);
+  }
+
+  auto residual = [&](const Eigen::VectorXd& xin, Eigen::VectorXd* rout) {
+    rout->resize(horizon);
+    for (int h = 0; h < horizon; ++h) {
+      const double k_h = (h == 0) ? k0 : xin(h - 1);
+      const double k_hp1 = xin(h);
+      const double k_hp2 = (h == horizon - 1) ? interp_policy(sol, xin(h), z_path[horizon]) : xin(h + 1);
+      const double z_h = z_path[h];
+      const double z_hp1 = z_path[h + 1];
+
+      const double y_h = std::exp(z_h) * std::pow(k_h, sol.p.alpha);
+      const double c_h = y_h + (1.0 - sol.p.delta) * k_h - k_hp1;
+      const double y_hp1 = std::exp(z_hp1) * std::pow(k_hp1, sol.p.alpha);
+      const double c_hp1 = y_hp1 + (1.0 - sol.p.delta) * k_hp1 - k_hp2;
+
+      if (!(k_hp1 > 1e-10) || !(c_h > 1e-10) || !(c_hp1 > 1e-10)) {
+        (*rout)(h) = 1e6;
+        continue;
+      }
+      const double mpk = sol.p.alpha * std::exp(z_hp1) * std::pow(k_hp1, sol.p.alpha - 1.0) +
+                         (1.0 - sol.p.delta);
+      (*rout)(h) = (1.0 / c_h) - sol.p.beta * mpk / c_hp1;
+    }
+  };
+
+  solvers::NewtonOptions opt;
+  opt.max_iter = 80;
+  opt.tol = 1e-9;
+  opt.fd_eps = 1e-6;
+  const solvers::NewtonResult nr = solvers::newton_solve(&x, residual, opt);
+  if (!nr.success) {
+    throw std::runtime_error("solve_rbc_path_k1: newton failed, residual=" + std::to_string(nr.final_residual_norm));
+  }
+  return x(0);
+}
+
+Eigen::Vector2d rbc_pppf_mean_map(const RbcSolution& sol, const Eigen::Vector2d& state,
+                                  const std::vector<double>& omega_path, int horizon) {
+  Eigen::Vector2d out;
+  out(0) = solve_rbc_path_k1(sol, state(0), state(1), omega_path, horizon);
+  out(1) = sol.p.rho * state(1);  // mean current innovation is zero
+  return out;
+}
+
+statespace::GaussianMixtureTransition build_rbc_pppf_mixture(const RbcSolution& sol, const Eigen::Vector2d& x_ref,
+                                                             int horizon, PppfMode mode, double fd_eps = 1e-5) {
+  std::vector<double> node_eps;
+  std::vector<double> node_w;
+  if (mode == PppfMode::CE) {
+    node_eps = {0.0};
+    node_w = {1.0};
+  } else {
+    node_eps = {-2.8569700138728056, -1.3556261799742659, 0.0, 1.3556261799742659, 2.8569700138728056};
+    node_w = {0.011257411327720689, 0.22207592200561266, 0.5333333333333333, 0.22207592200561266,
+              0.011257411327720689};
+  }
+
+  statespace::GaussianMixtureTransition mix;
+  mix.weights = node_w;
+  mix.components.resize(node_eps.size());
+
+  for (int j = 0; j < static_cast<int>(node_eps.size()); ++j) {
+    const std::vector<double> omega_path = {node_eps[j]};
+    const auto f = [&](const Eigen::Vector2d& x) { return rbc_pppf_mean_map(sol, x, omega_path, horizon); };
+    const Eigen::Vector2d f0 = f(x_ref);
+    Eigen::Matrix2d A;
+    for (int d = 0; d < 2; ++d) {
+      Eigen::Vector2d xp = x_ref;
+      Eigen::Vector2d xm = x_ref;
+      const double h = fd_eps * std::max(1.0, std::abs(x_ref(d)));
+      xp(d) += h;
+      xm(d) -= h;
+      A.col(d) = (f(xp) - f(xm)) / (2.0 * h);
+    }
+    statespace::LinearGaussianTransition tr;
+    tr.A = A;
+    tr.a = f0 - A * x_ref;
+    tr.Q = Eigen::Matrix2d::Zero();
+    tr.Q(0, 0) = 1e-10;
+    tr.Q(1, 1) = sol.p.sigma * sol.p.sigma;
+    mix.components[j] = tr;
+  }
+  mix.check();
+  return mix;
+}
+
 std::vector<Eigen::VectorXd> simulate_data(const RbcSolution& sol, int T, double meas_sd, std::uint64_t seed_data,
                                            std::vector<RbcState>* states_out) {
   util::Rng rng(seed_data);
@@ -383,15 +497,15 @@ std::vector<Eigen::VectorXd> simulate_data(const RbcSolution& sol, int T, double
   std::vector<Eigen::VectorXd> y(T);
   states_out->resize(T);
   for (int t = 0; t < T; ++t) {
+    const double kp = interp_policy(sol, k, z);
+    z = sol.p.rho * z + sol.p.sigma * rng.normal();
+    k = kp;
+
     const RbcObs obs = rbc_observables(sol.p, sol, k, z);
     Eigen::Vector3d yt = obs.mean;
     for (int j = 0; j < 3; ++j) yt(j) += meas_sd * rng.normal();
     y[t] = yt;
     (*states_out)[t] = RbcState{k, z};
-
-    const double kp = interp_policy(sol, k, z);
-    z = sol.p.rho * z + sol.p.sigma * rng.normal();
-    k = kp;
   }
   return y;
 }
@@ -526,6 +640,63 @@ PfDiagnostics bootstrap_pf(const RbcSolution& sol, int N, const std::vector<Eige
   return diag;
 }
 
+PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon, int N,
+                              const std::vector<Eigen::VectorXd>& y, double meas_sd, std::uint64_t seed,
+                              double ess_frac = 0.5) {
+  util::Rng rng(seed);
+  const double k_ss = rbc_steady_state_k(sol.p);
+  const double z_sd = sol.p.sigma / std::sqrt(1.0 - sol.p.rho * sol.p.rho);
+  std::vector<RbcState> particles(N, RbcState{k_ss, 0.0});
+  for (int i = 0; i < N; ++i) particles[i].z = z_sd * rng.normal();
+  Eigen::VectorXd logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+  PfDiagnostics diag;
+  diag.ess.reserve(y.size());
+  const Eigen::Matrix3d R = meas_sd * meas_sd * Eigen::Matrix3d::Identity();
+
+  for (int t = 0; t < static_cast<int>(y.size()); ++t) {
+    const Eigen::VectorXd w_norm = logw.array().exp().matrix();
+    Eigen::Vector2d x_ref = Eigen::Vector2d::Zero();
+    for (int i = 0; i < N; ++i) {
+      x_ref(0) += w_norm(i) * particles[i].k;
+      x_ref(1) += w_norm(i) * particles[i].z;
+    }
+    const statespace::GaussianMixtureTransition mix = build_rbc_pppf_mixture(sol, x_ref, horizon, mode);
+
+    Eigen::VectorXd logw_new(N);
+    std::vector<RbcState> new_particles(N);
+    for (int i = 0; i < N; ++i) {
+      const int j = rng.categorical(mix.weights);
+      const auto& tr = mix.components[j];
+      Eigen::Vector2d x_prev;
+      x_prev << particles[i].k, particles[i].z;
+      Eigen::Vector2d mean = tr.A * x_prev + tr.a;
+      const double k_next = std::max(1e-8, mean(0) + std::sqrt(tr.Q(0, 0)) * rng.normal());
+      const double z_next = mean(1) + std::sqrt(tr.Q(1, 1)) * rng.normal();
+      const RbcObs obs = rbc_observables(sol.p, sol, k_next, z_next);
+      logw_new(i) = logw(i) + util::log_mvnorm_pdf(y[t], obs.mean, R);
+      new_particles[i] = RbcState{k_next, z_next};
+    }
+
+    const double logZ = util::log_sum_exp(logw_new);
+    diag.loglik += logZ;
+    logw_new.array() -= logZ;
+    const double ess_t = util::ess_from_logw(logw_new);
+    diag.ess.push_back(ess_t);
+    particles.swap(new_particles);
+    if (ess_t < ess_frac * static_cast<double>(N)) {
+      const Eigen::VectorXd w_norm2 = logw_new.array().exp().matrix();
+      const std::vector<int> idx = filters::systematic_resample(w_norm2, rng);
+      std::vector<RbcState> repl(N);
+      for (int i = 0; i < N; ++i) repl[i] = particles[idx[i]];
+      particles.swap(repl);
+      logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+    } else {
+      logw = logw_new;
+    }
+  }
+  return diag;
+}
+
 enum class ProposalMode { Exact, UT, CE };
 
 PfDiagnostics copf_pf(const RbcSolution& sol, ProposalMode mode, int N, const std::vector<Eigen::VectorXd>& y,
@@ -595,6 +766,7 @@ void write_summary_json(const std::filesystem::path& path,
   oss << "    \"R\": " << cli.R << ",\n";
   oss << "    \"Nk\": " << cli.Nk << ",\n";
   oss << "    \"Nz\": " << cli.Nz << ",\n";
+  oss << "    \"horizon\": " << cli.horizon << ",\n";
   oss << "    \"meas_sd\": " << cli.meas_sd << "\n";
   oss << "  },\n";
   oss << "  \"methods\": {\n";
@@ -666,6 +838,10 @@ int main(int argc, char** argv) {
         {"copf_ut", ProposalMode::UT},
         {"copf_ce", ProposalMode::CE},
     };
+    const std::vector<std::pair<std::string, PppfMode>> pppf_methods = {
+        {"pppf_ce", PppfMode::CE},
+        {"pppf_q5", PppfMode::Q5},
+    };
 
     {
       std::vector<double> ess_means;
@@ -694,6 +870,27 @@ int main(int argc, char** argv) {
         util::Timer timer;
         const PfDiagnostics diag =
             copf_pf(sol, mode, cli.N, y, cli.meas_sd, 990000ULL + static_cast<std::uint64_t>(rep) * 31ULL);
+        const double rt = timer.elapsed_ms();
+        loglik_by_method[name].push_back(diag.loglik);
+        rt_by_method[name].push_back(rt);
+        util::write_csv_row(ll_out, name, rep, diag.loglik, rt);
+        double ess_mean = 0.0;
+        for (int t = 0; t < static_cast<int>(diag.ess.size()); ++t) {
+          util::write_csv_row(ess_out, name, rep, t, diag.ess[t]);
+          ess_mean += diag.ess[t];
+        }
+        ess_mean /= static_cast<double>(diag.ess.size());
+        ess_means.push_back(ess_mean);
+      }
+      mean_ess_by_method[name] = util::mean(ess_means);
+    }
+
+    for (const auto& [name, mode] : pppf_methods) {
+      std::vector<double> ess_means;
+      for (int rep = 0; rep < cli.R; ++rep) {
+        util::Timer timer;
+        const PfDiagnostics diag = pppf_mixture_pf(sol, mode, cli.horizon, cli.N, y, cli.meas_sd,
+                                                   770000ULL + static_cast<std::uint64_t>(rep) * 29ULL);
         const double rt = timer.elapsed_ms();
         loglik_by_method[name].push_back(diag.loglik);
         rt_by_method[name].push_back(rt);
