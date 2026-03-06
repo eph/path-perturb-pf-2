@@ -108,7 +108,7 @@ Section~\ref{sec:lit} positions PPPF relative to the particle-filter, extended-p
 Section~\ref{sec:ssm} introduces the state-space notation and resolves symbol collisions that would otherwise obscure the exposition.
 Sections~\ref{sec:cond_lg}--\ref{sec:filtering} define the finite-horizon stacked system, derive the conditional affine-Gaussian transition, state the approximation taxonomy, and present the filtering recursion in a form that can be implemented.
 Sections~\ref{sec:theory} and \ref{sec:dominance} discuss which refinement arguments are valid, what they converge to, and when PPPF can dominate a global-solution-based likelihood evaluator under a fixed compute budget.
-Sections~\ref{sec:toy} and \ref{sec:nk_benchmark} contain the smooth verification example and the New Keynesian ELB benchmark.
+Sections~\ref{sec:toy} and \ref{sec:nk_benchmark} contain the Burnside asset-pricing example and the New Keynesian ELB benchmark.
 The appendices collect the implicit-function derivation, the quadrature details, and benchmark-specific remarks.
 
 \section{Related literature}
@@ -581,27 +581,41 @@ A sufficient dominance condition is therefore
 This inequality is not a theorem about PPPF in general.
 It is the practical criterion that the benchmark is designed to illuminate.
 
-\section{A minimal toy example (no DSGE background)}
+\section{Burnside Asset-Pricing Verification Exercise}
 \label{sec:toy}
 
-The NK--ELB benchmark in Section~\ref{sec:nk_benchmark} combines all four approximation axes.
-The present example strips away the DSGE structure and isolates only the quadrature-as-mixture logic.
+The New Keynesian ELB benchmark in Section~\ref{sec:nk_benchmark} combines all four approximation axes.
+The present example is deliberately smoother.
+It isolates the expectation-approximation layer in an environment with a genuinely nonlinear conditional expectation but without kinks, regime switching, or anchor-localization issues.
 
-Consider the one-dimensional state-space model
-\[
-y_t = x_t + \eta_t,\qquad \eta_t\sim\mathcal{N}(0,r),
-\]
-and
-\[
-x_{t+1}\mid (x_t,\omega_t) = \rho x_t + b\,\tanh(\omega_t) + \sigma \varepsilon_{t+1},
+Consider the standard Burnside-style asset-pricing recursion
+\begin{equation}
+v(x_t)=\beta \E_t\!\left[\exp\!\big((1-\gamma)x_{t+1}\big)\bigl(1+v(x_{t+1})\bigr)\right],
+\label{eq:burnside_recursion}
+\end{equation}
+where the state follows the Gaussian AR(1)
+\begin{equation}
+x_{t+1}=(1-\rho)\mu+\rho x_t+\varepsilon_{t+1},
 \qquad
-\varepsilon_{t+1}\sim\mathcal{N}(0,1),
-\qquad
-\omega_t\sim\mathcal{N}(0,\Omega).
-\]
-Integrating out $\omega_t$ with respect to $\mathcal{N}(0,\Omega)$ yields a Gaussian-mixture transition of the form \eqref{eq:mixture_kernel}.
-Certainty equivalence corresponds to the degenerate choice $\omega_t\equiv 0$.
-The example is useful because a high-accuracy likelihood can be computed by fine quadrature or grid discretization, so one can see directly that increasing $K$ reduces expectation-approximation error, while collapsing the mixture to a single Gaussian alters the likelihood even if the first two moments are preserved.
+\varepsilon_{t+1}\sim\mathcal{N}(0,\sigma^2).
+\label{eq:burnside_state}
+\end{equation}
+The nonlinearity comes from the exponential pricing term in \eqref{eq:burnside_recursion}, so Jensen effects matter even though the state dynamics are Gaussian and smooth.
+
+This example admits an analytic benchmark.
+Iterating \eqref{eq:burnside_recursion} forward gives
+\begin{equation}
+v(x)=\sum_{j\ge 1}\beta^j \E\!\left[\exp\!\left((1-\gamma)\sum_{s=1}^j x_{t+s}\right)\middle| x_t=x\right].
+\label{eq:burnside_series}
+\end{equation}
+Because the conditional sum of future $x_{t+s}$ is Gaussian under \eqref{eq:burnside_state}, each term in \eqref{eq:burnside_series} is available in closed form from log-normal moments.
+The exact benchmark in this section is therefore an analytic infinite-series object rather than a separate numerical global solution.
+
+The certainty-equivalence approximation drops the conditional variance terms implicit in \eqref{eq:burnside_series}.
+The quadrature approximation instead integrates the one-step shock $\varepsilon_{t+1}$ with a positive-weight sigma-point rule and uses certainty equivalence only for the continuation term beyond $t+1$.
+This is not yet a full PPPF likelihood problem.
+There is no filtering recursion and no discrete regime index.
+Its role is narrower and cleaner: it shows how much of the smooth nonlinear error comes from replacing a curved expectation by a degenerate or low-order approximation.
 
 \section{Benchmark: a New Keynesian model with an ELB}
 \label{sec:nk_benchmark}
@@ -656,7 +670,7 @@ Dispersion across repeated runs and ESS are interpreted as Monte Carlo diagnosti
 \subsection{Experimental design}
 
 The empirical design has two examples.
-The first is an analytic verification exercise based on Burnside's recursion.
+The first is the Burnside asset-pricing recursion in \eqref{eq:burnside_recursion}--\eqref{eq:burnside_state}.
 It is intentionally smooth and isolates the value of integrating over a curved expectation term when kinks and regime switching are absent.
 The second is a New Keynesian benchmark with an effective lower bound.
 That example combines horizon truncation, expectation approximation, local linearization, and regime handling at a genuine kink.
@@ -684,14 +698,15 @@ That distinction is essential: the benchmark is a high-quality comparison object
 
 \subsection{Illustrative results}
 
-We begin with the smooth example, an analytic Jensen-style validation based on Burnside's recursion, where an exact benchmark is available.
-Figure~\ref{fig:burnside_irf} reports impulse responses for the continuation value under the exact benchmark, a certainty-equivalence approximation, and a sigma-point (UT) one-step quadrature approximation.
-The UT approximation tracks curvature effects better than certainty equivalence, illustrating why explicit integration over a low-dimensional shock object can matter even when the underlying state is Gaussian.
+We begin with the smooth example, the Burnside asset-pricing recursion, for which the exact continuation value is available from the analytic series \eqref{eq:burnside_series}.
+Figure~\ref{fig:burnside_irf} reports the response of the continuation value to a one-standard-deviation shock to $x_0$ under the exact benchmark, certainty equivalence, and a one-step sigma-point quadrature approximation.
+The certainty-equivalence curve misses most of the nonlinear amplification created by the exponential pricing kernel.
+The one-step quadrature correction remains crude, but it moves the approximation in the right direction by restoring part of the missing curvature effect.
 
 \begin{figure}[t]
 \centering
 \input{fig_burnside_irf.tex}
-\caption{Burnside recursion verification exercise: exact benchmark versus certainty equivalence (CE) and unscented-transform (UT) quadrature.}
+\caption{Burnside asset-pricing example: continuation-value response to a one-standard-deviation shock under the exact analytic benchmark, certainty equivalence (CE), and one-step sigma-point quadrature (UT).}
 \label{fig:burnside_irf}
 \end{figure}
 
