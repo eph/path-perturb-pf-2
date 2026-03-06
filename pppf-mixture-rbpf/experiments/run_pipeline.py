@@ -93,8 +93,21 @@ def write_burnside_filter_table_tex(path: Path, summary: dict[str, Any]) -> None
         "pf_exact": "Bootstrap PF, exact",
         "pf_ce": "Bootstrap PF, CE",
         "pf_ut": "Bootstrap PF, UT",
+        "copf_exact": "COPF, exact",
+        "copf_ce": "COPF, CE",
+        "copf_ut": "COPF, UT",
     }
-    order = ["grid_exact", "grid_ce", "grid_ut", "pf_exact", "pf_ce", "pf_ut"]
+    order = [
+        "grid_exact",
+        "grid_ce",
+        "grid_ut",
+        "pf_exact",
+        "pf_ce",
+        "pf_ut",
+        "copf_exact",
+        "copf_ce",
+        "copf_ut",
+    ]
 
     lines: list[str] = []
     lines.append("\\begin{tabular}{lrrrrr}")

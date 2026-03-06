@@ -9,46 +9,67 @@
     "seed_data": 20260306
   },
   "methods": {
+    "copf_ce": {
+      "mean_loglik": -803.364,
+      "sd_loglik": 0.707635,
+      "mean_runtime_ms": 121.34,
+      "sd_runtime_ms": 4.41649,
+      "mean_ess": 275.011
+    },
+    "copf_exact": {
+      "mean_loglik": -771.008,
+      "sd_loglik": 0.524667,
+      "mean_runtime_ms": 124.636,
+      "sd_runtime_ms": 3.14105,
+      "mean_ess": 274.232
+    },
+    "copf_ut": {
+      "mean_loglik": -771.037,
+      "sd_loglik": 0.52079,
+      "mean_runtime_ms": 122.032,
+      "sd_runtime_ms": 4.16198,
+      "mean_ess": 274.402
+    },
     "grid_ce": {
       "mean_loglik": -803.06,
       "sd_loglik": 0,
-      "mean_runtime_ms": 3.55571,
+      "mean_runtime_ms": 5.17733,
       "sd_runtime_ms": 0,
       "mean_ess": -1
     },
     "grid_exact": {
       "mean_loglik": -770.763,
       "sd_loglik": 0,
-      "mean_runtime_ms": 3.52975,
+      "mean_runtime_ms": 5.12471,
       "sd_runtime_ms": 0,
       "mean_ess": -1
     },
     "grid_ut": {
       "mean_loglik": -770.763,
       "sd_loglik": 0,
-      "mean_runtime_ms": 3.42088,
+      "mean_runtime_ms": 5.19125,
       "sd_runtime_ms": 0,
       "mean_ess": -1
     },
     "pf_ce": {
       "mean_loglik": -832.321,
       "sd_loglik": 12.5251,
-      "mean_runtime_ms": 6.05468,
-      "sd_runtime_ms": 0.0551472,
+      "mean_runtime_ms": 9.63774,
+      "sd_runtime_ms": 0.501839,
       "mean_ess": 124.219
     },
     "pf_exact": {
       "mean_loglik": -775.617,
       "sd_loglik": 6.10903,
-      "mean_runtime_ms": 6.07264,
-      "sd_runtime_ms": 0.0179544,
+      "mean_runtime_ms": 9.62015,
+      "sd_runtime_ms": 0.431765,
       "mean_ess": 129.84
     },
     "pf_ut": {
       "mean_loglik": -775.705,
       "sd_loglik": 6.03475,
-      "mean_runtime_ms": 6.08287,
-      "sd_runtime_ms": 0.030787,
+      "mean_runtime_ms": 9.34965,
+      "sd_runtime_ms": 0.490323,
       "mean_ess": 129.897
     }
   }

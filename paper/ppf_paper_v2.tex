@@ -731,20 +731,21 @@ It shows that, once the continuation object is held fixed, the Jensen effect in 
 \end{figure}
 
 The same model also yields a full smooth nonlinear filtering benchmark.
-Table~\ref{tab:burnside_filter} reports dense-grid likelihoods based on the exact, certainty-equivalent, and sigma-point value-function maps together with repeated bootstrap particle-filter estimates using the same three maps inside the observation density.
+Table~\ref{tab:burnside_filter} reports dense-grid likelihoods based on the exact, certainty-equivalent, and sigma-point value-function maps together with repeated bootstrap particle-filter estimates and an observation-informed COPF-style proposal filter using the same three maps inside the observation density.
 On the dense grid, the sigma-point approximation is indistinguishable from the exact benchmark at the reported precision, whereas certainty equivalence lowers the mean log-likelihood by about $32$ points.
-The particle-filter comparison tells the same story.
-With $T=150$, $N=512$, $N_{\mathrm{rep}}=20$, and $\sigma_\eta=10$, the exact and sigma-point bootstrap filters attain mean log-likelihoods of about $-775$ with cross-run standard deviations near $6$ and mean ESS near $130$.
-The certainty-equivalent bootstrap filter falls to about $-832$, its cross-run standard deviation rises above $12$, and its ESS declines modestly.
+The proposal comparison sharpens the same message.
+With $T=150$, $N=512$, $N_{\mathrm{rep}}=20$, and $\sigma_\eta=10$, the exact and sigma-point bootstrap filters attain mean log-likelihoods near $-775$ with cross-run standard deviations around $6$ and mean ESS near $130$, whereas the certainty-equivalent bootstrap filter falls to about $-832$.
+Once the proposal is made observation informed, the remaining gap nearly disappears: the exact and sigma-point COPF variants attain mean log-likelihoods of about $-771$, within roughly $0.3$ points of the dense-grid benchmark, with cross-run standard deviations near $0.5$ and mean ESS around $274$.
+By contrast, the certainty-equivalent COPF remains close to the certainty-equivalent grid benchmark and therefore does not repair the expectation error.
 This is the clean validation exercise for the smooth case.
-Once the nonlinear expectation is integrated accurately, the remaining gap to the dense-grid benchmark is ordinary particle-filter noise rather than a transition-approximation failure.
+Accurate quadrature and an observation-informed proposal together make the remaining discrepancy to the dense-grid benchmark essentially a Monte Carlo problem rather than a transition-approximation problem.
 
 \begin{table}[t]
 \centering
 \scriptsize
 \setlength{\tabcolsep}{3pt}
 \input{tab_burnside_filter.tex}
-\caption{Smooth Burnside filtering benchmark. The table reports mean log-likelihoods for dense-grid filters based on the exact, CE, and UT value-function maps, together with repeated bootstrap particle-filter results using the same three measurement maps. The sample length is $T=150$, the particle count is $N=512$, the number of repeated runs is $N_{\mathrm{rep}}=20$, and the observation-noise standard deviation is $\sigma_\eta=10.0$. In this smooth nonlinear environment, the UT approximation matches the exact benchmark at the reported precision, whereas certainty equivalence yields a materially worse likelihood and greater Monte Carlo dispersion.}
+\caption{Smooth Burnside filtering benchmark. The table reports mean log-likelihoods for dense-grid filters based on the exact, CE, and UT value-function maps, together with repeated bootstrap particle-filter and observation-informed COPF results using the same three measurement maps. The sample length is $T=150$, the particle count is $N=512$, the number of repeated runs is $N_{\mathrm{rep}}=20$, and the observation-noise standard deviation is $\sigma_\eta=10.0$. In this smooth nonlinear environment, the UT approximation matches the exact benchmark at the reported precision, while the observation-informed COPF all but eliminates the remaining bootstrap gap for the exact and UT maps.}
 \label{tab:burnside_filter}
 \end{table}
 

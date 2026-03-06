@@ -151,6 +151,106 @@ double log_norm_pdf_scalar(double y, double mean, double sd) {
   return -0.5 * std::log(2.0 * M_PI) - std::log(sd) - 0.5 * z * z;
 }
 
+double interp_value(const std::vector<double>& grid, const std::vector<double>& vals, double x);
+
+double sample_normal(double mean, double sd, util::Rng& rng) { return mean + sd * rng.normal(); }
+
+struct ScalarMixtureProposal {
+  std::vector<double> means;
+  std::vector<double> probs;
+  double comp_sd = 1.0;
+};
+
+double log_mixture_normal_pdf(double x, const ScalarMixtureProposal& proposal) {
+  Eigen::VectorXd log_terms(static_cast<int>(proposal.means.size()));
+  for (int j = 0; j < static_cast<int>(proposal.means.size()); ++j) {
+    log_terms(j) = std::log(proposal.probs[j]) + log_norm_pdf_scalar(x, proposal.means[j], proposal.comp_sd);
+  }
+  return util::log_sum_exp(log_terms);
+}
+
+ScalarMixtureProposal build_scalar_posterior_mixture_proposal(
+    double prior_mean, double prior_sd, double y_t, double meas_sd, const std::vector<double>& value_grid,
+    const std::vector<double>& grid, int num_nodes = 21, double width_sd = 5.5, double jitter_frac = 0.75) {
+  if (num_nodes < 5 || num_nodes % 2 == 0) throw std::invalid_argument("proposal nodes must be odd and >= 5");
+  const double z_lo = -width_sd;
+  const double z_hi = width_sd;
+  const double dz = (z_hi - z_lo) / static_cast<double>(num_nodes - 1);
+  Eigen::VectorXd log_terms(num_nodes);
+  std::vector<double> means(num_nodes, 0.0);
+  for (int j = 0; j < num_nodes; ++j) {
+    const double z = z_lo + static_cast<double>(j) * dz;
+    const double xj = prior_mean + prior_sd * z;
+    const double trap_w = (j == 0 || j == num_nodes - 1) ? 0.5 * dz : dz;
+    const double mean_y = interp_value(grid, value_grid, xj);
+    means[j] = xj;
+    log_terms(j) = std::log(trap_w) - 0.5 * z * z - 0.5 * std::log(2.0 * M_PI) +
+                   log_norm_pdf_scalar(y_t, mean_y, meas_sd);
+  }
+  const double log_norm = util::log_sum_exp(log_terms);
+  ScalarMixtureProposal proposal;
+  proposal.means = means;
+  proposal.probs.resize(num_nodes);
+  for (int j = 0; j < num_nodes; ++j) proposal.probs[j] = std::exp(log_terms(j) - log_norm);
+  proposal.comp_sd = std::max(1e-6, jitter_frac * prior_sd * dz);
+  return proposal;
+}
+
+filters::PfDiagnostics copf_scalar_burnside(
+    int N, const Eigen::VectorXd& x0, const Eigen::MatrixXd& P0_sqrt, const std::vector<Eigen::VectorXd>& y,
+    const models::BurnsideParams& p, double meas_sd, const std::vector<double>& value_grid,
+    const std::vector<double>& grid, util::Rng& rng, double ess_frac = 0.5) {
+  if (N <= 0) throw std::invalid_argument("copf_scalar_burnside: N<=0");
+  if (x0.size() != 1 || P0_sqrt.rows() != 1 || P0_sqrt.cols() != 1) {
+    throw std::invalid_argument("copf_scalar_burnside: scalar state required");
+  }
+
+  std::vector<double> particles(N, x0(0));
+  for (int i = 0; i < N; ++i) particles[i] = x0(0) + P0_sqrt(0, 0) * rng.normal();
+
+  Eigen::VectorXd logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+  filters::PfDiagnostics diag;
+  diag.ess.reserve(y.size());
+
+  for (int t = 0; t < static_cast<int>(y.size()); ++t) {
+    Eigen::VectorXd logw_new(N);
+    std::vector<double> new_particles(N, 0.0);
+    for (int i = 0; i < N; ++i) {
+      const double prior_mean = (1.0 - p.rho) * p.mu + p.rho * particles[i];
+      const ScalarMixtureProposal proposal = build_scalar_posterior_mixture_proposal(
+          prior_mean, p.sigma, y[t](0), meas_sd, value_grid, grid);
+      const int draw_idx = rng.categorical(proposal.probs);
+      const double x_draw = sample_normal(proposal.means[draw_idx], proposal.comp_sd, rng);
+      const double mean_y = interp_value(grid, value_grid, x_draw);
+      const double log_obs = log_norm_pdf_scalar(y[t](0), mean_y, meas_sd);
+      const double log_prior = log_norm_pdf_scalar(x_draw, prior_mean, p.sigma);
+      const double log_prop = log_mixture_normal_pdf(x_draw, proposal);
+      logw_new(i) = logw(i) + log_obs + log_prior - log_prop;
+      new_particles[i] = x_draw;
+    }
+
+    const double logZ = util::log_sum_exp(logw_new);
+    diag.loglik += logZ;
+    logw_new.array() -= logZ;
+    const double ess_t = util::ess_from_logw(logw_new);
+    diag.ess.push_back(ess_t);
+
+    particles.swap(new_particles);
+    if (ess_t < ess_frac * static_cast<double>(N)) {
+      const Eigen::VectorXd w_norm = logw_new.array().exp().matrix();
+      const std::vector<int> idx = filters::systematic_resample(w_norm, rng);
+      std::vector<double> resampled(N, 0.0);
+      for (int i = 0; i < N; ++i) resampled[i] = particles[idx[i]];
+      particles.swap(resampled);
+      logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+    } else {
+      logw = logw_new;
+    }
+  }
+
+  return diag;
+}
+
 std::vector<double> tabulate_values(
     const std::vector<double>& grid,
     const std::function<double(const models::BurnsideParams&, double)>& value_fn,
@@ -320,7 +420,10 @@ int main(int argc, char** argv) {
       const std::vector<double>& value_grid = kv.second;
       std::string pf_name = grid_name;
       pf_name.replace(0, 4, "pf");
+      std::string copf_name = grid_name;
+      copf_name.replace(0, 4, "copf");
       std::vector<double> ess_means;
+      std::vector<double> copf_ess_means;
       for (int rep = 0; rep < cli.R; ++rep) {
         util::Rng rng_pf(930000ULL + static_cast<std::uint64_t>(rep) * 97ULL);
         const auto log_obs = [&](const Eigen::VectorXd& state, const Eigen::VectorXd& y_t, int /*t*/) {
@@ -341,8 +444,25 @@ int main(int argc, char** argv) {
         }
         ess_mean /= static_cast<double>(diag.ess.size());
         ess_means.push_back(ess_mean);
+
+        util::Rng rng_copf(1950000ULL + static_cast<std::uint64_t>(rep) * 131ULL);
+        util::Timer timer_copf;
+        const filters::PfDiagnostics diag_copf =
+            copf_scalar_burnside(cli.N, mean0, P0_sqrt, y, p, cli.meas_sd, value_grid, grid, rng_copf, 0.5);
+        const double rt_copf = timer_copf.elapsed_ms();
+        loglik_by_method[copf_name].push_back(diag_copf.loglik);
+        rt_by_method[copf_name].push_back(rt_copf);
+        util::write_csv_row(ll_out, copf_name, rep, diag_copf.loglik, rt_copf);
+        double copf_ess_mean = 0.0;
+        for (int t = 0; t < static_cast<int>(diag_copf.ess.size()); ++t) {
+          util::write_csv_row(ess_out, copf_name, rep, t, diag_copf.ess[t]);
+          copf_ess_mean += diag_copf.ess[t];
+        }
+        copf_ess_mean /= static_cast<double>(diag_copf.ess.size());
+        copf_ess_means.push_back(copf_ess_mean);
       }
       mean_ess_by_method[pf_name] = util::mean(ess_means);
+      mean_ess_by_method[copf_name] = util::mean(copf_ess_means);
     }
 
     write_summary_json(cli.out_dir / "summary.json", loglik_by_method, rt_by_method, mean_ess_by_method,

@@ -45,7 +45,8 @@ and compare:
 
 - a dense-grid filter using the exact value function,
 - dense-grid filters using CE and UT value-function maps,
-- bootstrap particle filters using the same three maps in the observation density.
+- bootstrap particle filters using the same three maps in the observation density,
+- an observation-informed COPF-style proposal filter using the same three maps.
 
 This benchmark is designed to separate smooth nonlinear filtering error from the kink-specific issues in the NK-ELB model.
 
