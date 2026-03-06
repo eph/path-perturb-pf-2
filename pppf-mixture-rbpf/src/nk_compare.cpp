@@ -891,7 +891,8 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
 
 void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::path& out_dir, int T,
                                     int N, int R, const Eigen::Matrix3d& Rm,
-                                    std::uint64_t seed_data, int omega_horizon = 1) {
+                                    std::uint64_t seed_data, int omega_horizon = 1,
+                                    double omega_var = 1.0) {
   // This benchmark removes the ELB kink and uses a continuous Gaussian AR(1) DGP for (r,nu),
   // so the model is exactly linear-Gaussian and Kalman provides the exact likelihood benchmark.
   p.i_lower = -1000.0;
@@ -1050,7 +1051,7 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
 
     {
       PppfOptions opt;
-      opt.omega_var = 1.0;
+      opt.omega_var = omega_var;
       opt.omega_horizon = omega_horizon;
       opt.optimal_index_proposal = true;
       opt.anchor_mode = AnchorMode::Shared;
@@ -1076,7 +1077,7 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
   write_summary_json(summary_json, loglik_by_method, rt_by_method, mean_ess_by_method, T, N, R);
   std::cout << "Wrote " << summary_json.string() << "\n";
 
-  std::cout << "Linear NK mean loglik gaps vs kalman_exact: "
+  std::cout << "Linear NK mean loglik gaps vs kalman_exact (omega_var=" << omega_var << "): "
             << "BSPF=" << util::mean(loglik_by_method["linear_bootstrap_pf"]) - ll_kalman << ", "
             << "COPF=" << util::mean(loglik_by_method["linear_copf_exact"]) - ll_kalman << ", "
             << "PPPF-CE=" << util::mean(loglik_by_method["pppf_ce_rbpf"]) - ll_kalman << ", "
@@ -1448,6 +1449,7 @@ struct CliOptions {
   int R = 30;
   int horizon = 20;
   int omega_horizon = 1;
+  double omega_var = 1.0;
   AnchorMode anchor_mode = AnchorMode::Clustered;
   std::uint64_t seed_data = 20260113ULL;
   std::uint64_t seed_sanity = 20260218ULL;
@@ -1478,6 +1480,8 @@ CliOptions parse_args(int argc, char** argv) {
       opt.horizon = std::stoi(need(a));
     } else if (a == "--omega_horizon") {
       opt.omega_horizon = std::stoi(need(a));
+    } else if (a == "--omega_var") {
+      opt.omega_var = std::stod(need(a));
     } else if (a == "--anchor") {
       const std::string v = need(a);
       if (v == "shared") {
@@ -1505,7 +1509,7 @@ CliOptions parse_args(int argc, char** argv) {
       opt.run_sanity = false;
     } else if (a == "--help" || a == "-h") {
       std::cout << "Usage: nk_compare [--mode baseline|linear|ablations] [--T int] [--N int] [--R int]\\n";
-      std::cout << "                 [--horizon int] [--omega_horizon int] [--anchor shared|clustered|per_particle] [--out_dir path]\\n";
+      std::cout << "                 [--horizon int] [--omega_horizon int] [--omega_var double] [--anchor shared|clustered|per_particle] [--out_dir path]\\n";
       std::cout << "                 [--out_dir_abl path] [--paper_table path]\\n";
       std::cout << "                 [--seed_data uint64] [--seed_sanity uint64] [--out_dir_sanity path] [--no_sanity]\\n";
       std::exit(0);
@@ -1558,12 +1562,12 @@ int main(int argc, char** argv) {
       if (cli.run_sanity) {
         std::cout << "\n=== Linear NK benchmark (no ELB; exact Kalman/COPF available) ===\n";
         run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, cli.N, cli.R, Rm, cli.seed_sanity,
-                                        /*omega_horizon=*/cfg1.omega_horizon);
+                                        /*omega_horizon=*/cfg1.omega_horizon, cli.omega_var);
       }
     } else if (cli.mode == "linear") {
       std::cout << "\n=== Linear NK benchmark (no ELB; exact Kalman/COPF available) ===\n";
       run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, cli.N, cli.R, Rm, cli.seed_sanity,
-                                      cli.omega_horizon);
+                                      cli.omega_horizon, cli.omega_var);
     } else if (cli.mode == "ablations") {
       std::cout << "\n=== NK-ELB ablation suite ===\n";
       run_nk_elb_ablations(p, cli.T, cli.N, cli.R, Rm, cli.seed_data, cli.out_dir_abl, cli.paper_table);
