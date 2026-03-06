@@ -20,6 +20,11 @@ enum class PppfRegimeMode {
   MixtureBind0 = 2,
 };
 
+enum class PppfOmegaMode {
+  ROnly = 0,
+  RAndNu = 1,
+};
+
 // State ordering used in this repo: z = [x, pi, r^n, nu]^T.
 inline Eigen::Vector4d nk_transition_markov(const NkParams& p, const Eigen::Vector4d& z_prev,
                                             double eps_r, double eps_nu) {
@@ -47,19 +52,30 @@ inline Eigen::Vector4d nk_transition_markov(const NkParams& p, const Eigen::Vect
 // These are inserted into eps_*_path[0..L-1], which correspond to innovations at t+2..t+L+1.
 inline Eigen::Vector4d nk_transition_markov_anticipated(const NkParams& p, const Eigen::Vector4d& z_prev,
                                                         double eps_r, double eps_nu,
-                                                        const Eigen::VectorXd& omega) {
+                                                        const Eigen::VectorXd& omega,
+                                                        PppfOmegaMode omega_mode =
+                                                            PppfOmegaMode::RAndNu) {
   const double r_next = p.rho_r * z_prev(2) + p.sigma_r * eps_r;
   const double nu_next = p.rho_nu * z_prev(3) + p.sigma_nu * eps_nu;
 
   std::vector<double> eps_r_path(p.horizon, 0.0);
   std::vector<double> eps_nu_path(p.horizon, 0.0);
   if (omega.size() > 0) {
-    if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_markov_anticipated: omega odd");
-    const int L = static_cast<int>(omega.size() / 2);
+    int L = 0;
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_markov_anticipated: omega odd");
+      L = static_cast<int>(omega.size() / 2);
+    } else {
+      L = static_cast<int>(omega.size());
+    }
     if (L > p.horizon) throw std::invalid_argument("nk_transition_markov_anticipated: omega L>horizon");
-    for (int i = 0; i < L; ++i) {
-      eps_r_path[i] = omega(i);
-      eps_nu_path[i] = omega(L + i);
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      for (int i = 0; i < L; ++i) {
+        eps_r_path[i] = omega(i);
+        eps_nu_path[i] = omega(L + i);
+      }
+    } else {
+      for (int i = 0; i < L; ++i) eps_r_path[i] = omega(i);
     }
   }
 
@@ -72,19 +88,29 @@ inline Eigen::Vector4d nk_transition_markov_anticipated(const NkParams& p, const
 
 inline Eigen::Vector4d nk_transition_markov_anticipated_conditional_bind0(
     const NkParams& p, const Eigen::Vector4d& z_prev, double eps_r, double eps_nu,
-    const Eigen::VectorXd& omega, int bind0) {
+    const Eigen::VectorXd& omega, int bind0,
+    PppfOmegaMode omega_mode = PppfOmegaMode::RAndNu) {
   const double r_next = p.rho_r * z_prev(2) + p.sigma_r * eps_r;
   const double nu_next = p.rho_nu * z_prev(3) + p.sigma_nu * eps_nu;
 
   std::vector<double> eps_r_path(p.horizon, 0.0);
   std::vector<double> eps_nu_path(p.horizon, 0.0);
   if (omega.size() > 0) {
-    if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_bind0: omega odd");
-    const int L = static_cast<int>(omega.size() / 2);
+    int L = 0;
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_bind0: omega odd");
+      L = static_cast<int>(omega.size() / 2);
+    } else {
+      L = static_cast<int>(omega.size());
+    }
     if (L > p.horizon) throw std::invalid_argument("nk_transition_bind0: omega L>horizon");
-    for (int i = 0; i < L; ++i) {
-      eps_r_path[i] = omega(i);
-      eps_nu_path[i] = omega(L + i);
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      for (int i = 0; i < L; ++i) {
+        eps_r_path[i] = omega(i);
+        eps_nu_path[i] = omega(L + i);
+      }
+    } else {
+      for (int i = 0; i < L; ++i) eps_r_path[i] = omega(i);
     }
   }
 
@@ -100,19 +126,30 @@ inline Eigen::Vector4d nk_transition_markov_anticipated_given_bind(const NkParam
                                                                    const Eigen::Vector4d& z_prev,
                                                                    double eps_r, double eps_nu,
                                                                    const Eigen::VectorXd& omega,
-                                                                   const std::vector<int>& bind) {
+                                                                   const std::vector<int>& bind,
+                                                                   PppfOmegaMode omega_mode =
+                                                                       PppfOmegaMode::RAndNu) {
   const double r_next = p.rho_r * z_prev(2) + p.sigma_r * eps_r;
   const double nu_next = p.rho_nu * z_prev(3) + p.sigma_nu * eps_nu;
 
   std::vector<double> eps_r_path(p.horizon, 0.0);
   std::vector<double> eps_nu_path(p.horizon, 0.0);
   if (omega.size() > 0) {
-    if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_bind: omega odd");
-    const int L = static_cast<int>(omega.size() / 2);
+    int L = 0;
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      if (omega.size() % 2 != 0) throw std::invalid_argument("nk_transition_bind: omega odd");
+      L = static_cast<int>(omega.size() / 2);
+    } else {
+      L = static_cast<int>(omega.size());
+    }
     if (L > p.horizon) throw std::invalid_argument("nk_transition_bind: omega L>horizon");
-    for (int i = 0; i < L; ++i) {
-      eps_r_path[i] = omega(i);
-      eps_nu_path[i] = omega(L + i);
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      for (int i = 0; i < L; ++i) {
+        eps_r_path[i] = omega(i);
+        eps_nu_path[i] = omega(L + i);
+      }
+    } else {
+      for (int i = 0; i < L; ++i) eps_r_path[i] = omega(i);
     }
   }
 
@@ -146,6 +183,8 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
                                                                 double unexpected_eps_r_mean = 0.0,
                                                                 double unexpected_eps_r_var = 1.0,
                                                                 double unexpected_eps_nu_var = 1.0,
+                                                                PppfOmegaMode omega_mode =
+                                                                    PppfOmegaMode::ROnly,
                                                                 PppfRegimeMode regime_mode =
                                                                     PppfRegimeMode::EndogenousByNode,
                                                                 double fd_eps = 1e-6) {
@@ -155,16 +194,41 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   if (!(unexpected_eps_nu_var >= 0.0)) throw std::invalid_argument("build_pppf_mixture: eps_nu_var<0");
 
   const int L = std::min(omega_horizon, p.horizon);
-  const int d = 2 * L;
+  const int d = (omega_mode == PppfOmegaMode::RAndNu) ? (2 * L) : L;
 
   const auto normal_cdf = [&](double z) { return 0.5 * (1.0 + std::erf(z / std::sqrt(2.0))); };
+  auto unpack_omega_paths = [&](const Eigen::VectorXd& omega_node, std::vector<double>& eps_r_path,
+                                std::vector<double>& eps_nu_path) {
+    if (omega_node.size() == 0) return;
+
+    int L0 = 0;
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      if (omega_node.size() % 2 != 0) {
+        throw std::invalid_argument("build_pppf_mixture: omega node has odd length");
+      }
+      L0 = static_cast<int>(omega_node.size() / 2);
+    } else {
+      L0 = static_cast<int>(omega_node.size());
+    }
+    if (L0 > p.horizon) {
+      throw std::invalid_argument("build_pppf_mixture: omega node exceeds horizon");
+    }
+
+    for (int i = 0; i < L0; ++i) eps_r_path[i] = omega_node(i);
+    if (omega_mode == PppfOmegaMode::RAndNu) {
+      for (int i = 0; i < L0; ++i) eps_nu_path[i] = omega_node(L0 + i);
+    }
+  };
+  auto shocked_anchor_state = [&](double eps_r, double eps_nu) {
+    return std::pair<double, double>{p.rho_r * z_ref(2) + p.sigma_r * eps_r,
+                                     p.rho_nu * z_ref(3) + p.sigma_nu * eps_nu};
+  };
 
   // Special case: omega is degenerate (or absent) => a single component (exactly), which is
   // important for the "all methods coincide" no-ELB sanity check.
   if (d == 0 || omega_var == 0.0) {
     const Eigen::VectorXd omega0 = Eigen::VectorXd::Zero(d);
-    const double r_next0 = p.rho_r * z_ref(2);
-    const double nu_next0 = p.rho_nu * z_ref(3);
+    const auto [r_next0, nu_next0] = shocked_anchor_state(unexpected_eps_r_mean, 0.0);
     std::vector<double> eps_r_path(p.horizon, 0.0);
     std::vector<double> eps_nu_path(p.horizon, 0.0);
     const NkPath base_path =
@@ -177,22 +241,27 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
 
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
-      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega0, bind);
+      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega0, bind, omega_mode);
     };
 
     const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
-    Eigen::Vector4d z_mean = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega0, bind);
+    Eigen::Vector4d z_mean =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega0, bind, omega_mode);
 
     const double h = 1e-6;
-    const Eigen::Vector4d zrp = nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega0, bind);
-    const Eigen::Vector4d zrm = nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega0, bind);
+    const Eigen::Vector4d zrp =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega0, bind, omega_mode);
+    const Eigen::Vector4d zrm =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega0, bind, omega_mode);
     const Eigen::Vector4d Br = (zrp - zrm) / (2.0 * h);
     z_mean += Br * unexpected_eps_r_mean;
 
     const Eigen::Vector4d a = z_mean - A * z_ref;
 
-    const Eigen::Vector4d znp = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega0, bind);
-    const Eigen::Vector4d znm = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega0, bind);
+    const Eigen::Vector4d znp =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega0, bind, omega_mode);
+    const Eigen::Vector4d znm =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega0, bind, omega_mode);
     const Eigen::Vector4d Bn = (znp - znm) / (2.0 * h);
 
     Eigen::Matrix4d Q =
@@ -223,8 +292,7 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
     std::vector<double> eps_r_path(p.horizon, 0.0);
     std::vector<double> eps_nu_path(p.horizon, 0.0);
-    const double r_next = p.rho_r * z_ref(2);
-    const double nu_next = p.rho_nu * z_ref(3);
+    const auto [r_next, nu_next] = shocked_anchor_state(unexpected_eps_r_mean, 0.0);
     const NkPath path0 = solve_nk_occbin_path(p, r_next, nu_next, eps_r_path, eps_nu_path);
     bind0_fixed = path0.bind[0];
   }
@@ -240,18 +308,12 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
                            std::optional<int> bind0_override) -> LinTrans {
     std::vector<double> eps_r0(p.horizon, 0.0);
     std::vector<double> eps_nu0(p.horizon, 0.0);
-    if (omega_node.size() > 0) {
-      const int L0 = static_cast<int>(omega_node.size() / 2);
-      for (int i = 0; i < L0; ++i) {
-        eps_r0[i] = omega_node(i);
-        eps_nu0[i] = omega_node(L0 + i);
-      }
-    }
-    const double r_next0 = p.rho_r * z_ref(2);
-    const double nu_next0 = p.rho_nu * z_ref(3);
+    unpack_omega_paths(omega_node, eps_r0, eps_nu0);
+    const auto [r_next0, nu_next0] = shocked_anchor_state(unexpected_eps_r_mean, 0.0);
     NkPath base_path;
     if (bind0_override.has_value()) {
-      base_path = solve_nk_occbin_path_conditional_bind0(p, r_next0, nu_next0, eps_r0, eps_nu0, *bind0_override);
+      base_path =
+          solve_nk_occbin_path_conditional_bind0(p, r_next0, nu_next0, eps_r0, eps_nu0, *bind0_override);
     } else if (regime_mode == PppfRegimeMode::FixedBind0FromMean) {
       base_path = solve_nk_occbin_path_conditional_bind0(p, r_next0, nu_next0, eps_r0, eps_nu0, bind0_fixed);
     } else {
@@ -261,19 +323,19 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
 
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
-      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega_node, bind_path);
+      return nk_transition_markov_anticipated_given_bind(p, z4, 0.0, 0.0, omega_node, bind_path, omega_mode);
     };
 
     const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
     Eigen::Vector4d z_mean;
-    z_mean = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega_node, bind_path);
-
+    z_mean =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, 0.0, omega_node, bind_path, omega_mode);
     const double h = 1e-6;
     Eigen::Vector4d zrp, zrm, znp, znm;
-    zrp = nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega_node, bind_path);
-    zrm = nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega_node, bind_path);
-    znp = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega_node, bind_path);
-    znm = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega_node, bind_path);
+    zrp = nk_transition_markov_anticipated_given_bind(p, z_ref, +h, 0.0, omega_node, bind_path, omega_mode);
+    zrm = nk_transition_markov_anticipated_given_bind(p, z_ref, -h, 0.0, omega_node, bind_path, omega_mode);
+    znp = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, +h, omega_node, bind_path, omega_mode);
+    znm = nk_transition_markov_anticipated_given_bind(p, z_ref, 0.0, -h, omega_node, bind_path, omega_mode);
 
     const Eigen::Vector4d Br = (zrp - zrm) / (2.0 * h);
     z_mean += Br * unexpected_eps_r_mean;
@@ -284,6 +346,37 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
         unexpected_eps_r_var * (Br * Br.transpose()) + unexpected_eps_nu_var * (Bn * Bn.transpose());
     Q += 1e-10 * Eigen::Matrix4d::Identity();
     return LinTrans{A, a, Q, z_mean};
+  };
+
+  auto bind0_probability_cubature = [&](const Eigen::VectorXd& omega_node) -> double {
+    Eigen::Vector2d eps_mean = Eigen::Vector2d::Zero();
+    eps_mean(0) = unexpected_eps_r_mean;
+    Eigen::Matrix2d eps_cov = Eigen::Matrix2d::Zero();
+    eps_cov(0, 0) = unexpected_eps_r_var;
+    eps_cov(1, 1) = unexpected_eps_nu_var;
+
+    if (unexpected_eps_r_var == 0.0 && unexpected_eps_nu_var == 0.0) {
+      const Eigen::Vector4d z_next =
+          nk_transition_markov_anticipated(p, z_ref, unexpected_eps_r_mean, 0.0, omega_node, omega_mode);
+      return nk_policy_rate(p, z_next) <= p.i_lower + p.regime_tol ? 1.0 : 0.0;
+    }
+
+    const auto eps_sp = quadrature::unscented_sigma_points(eps_mean, eps_cov, /*alpha=*/1.0,
+                                                           /*kappa=*/2.0, /*beta=*/2.0);
+    double p_bind = 0.0;
+    std::vector<double> eps_r_path(p.horizon, 0.0);
+    std::vector<double> eps_nu_path(p.horizon, 0.0);
+    unpack_omega_paths(omega_node, eps_r_path, eps_nu_path);
+
+    for (int q = 0; q < eps_sp.points.rows(); ++q) {
+      const double eps_r = eps_sp.points(q, 0);
+      const double eps_nu = eps_sp.points(q, 1);
+      const double r_next = p.rho_r * z_ref(2) + p.sigma_r * eps_r;
+      const double nu_next = p.rho_nu * z_ref(3) + p.sigma_nu * eps_nu;
+      const NkPath path = solve_nk_occbin_path(p, r_next, nu_next, eps_r_path, eps_nu_path);
+      p_bind += eps_sp.w_mean(q) * static_cast<double>(path.bind[0] != 0);
+    }
+    return std::min(1.0, std::max(0.0, p_bind));
   };
 
   for (int k = 0; k < K; ++k) {
@@ -303,19 +396,7 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     const LinTrans lt_slack = linearize_one(omega_node, /*bind0_override=*/0);
     const LinTrans lt_bind = linearize_one(omega_node, /*bind0_override=*/1);
 
-    const Eigen::RowVector4d h_rule =
-        (Eigen::RowVector4d() << p.phi_x, p.phi_pi, 0.0, 1.0).finished();
-    const double mu_rule = p.i_ss + (h_rule * lt_slack.z_mean)(0);
-    const double var_rule = (h_rule * lt_slack.Q * h_rule.transpose())(0, 0);
-    const double sd_rule = std::sqrt(std::max(0.0, var_rule));
-
-    double p_bind = 0.0;
-    if (sd_rule < 1e-12) {
-      p_bind = (mu_rule <= p.i_lower) ? 1.0 : 0.0;
-    } else {
-      p_bind = normal_cdf((p.i_lower - mu_rule) / sd_rule);
-    }
-    p_bind = std::min(1.0, std::max(0.0, p_bind));
+    const double p_bind = bind0_probability_cubature(omega_node);
 
     const double w_bind = w_node * p_bind;
     const double w_slack = w_node * (1.0 - p_bind);

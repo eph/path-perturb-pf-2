@@ -44,6 +44,7 @@ enum class PppfIMeasMode { Censored = 0, Linear = 1 };
 struct PppfOptions {
   double omega_var = 1.0;
   int omega_horizon = 1;
+  models::PppfOmegaMode omega_mode = models::PppfOmegaMode::ROnly;
   bool optimal_index_proposal = true;
   AnchorMode anchor_mode = AnchorMode::Shared;
   PppfIMeasMode i_meas_mode = PppfIMeasMode::Censored;
@@ -245,7 +246,8 @@ RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::V
   const auto mixture_builder = [&](int /*t*/, const Eigen::VectorXd& ref_prev) {
     const Eigen::Vector4d z_ref = ref_prev;
     return models::build_pppf_mixture(p, z_ref, opt.omega_horizon, opt.omega_var, /*eps_r_mean=*/0.0,
-                                      /*eps_r_var=*/1.0, /*eps_nu_var=*/1.0, opt.regime_mode);
+                                      /*eps_r_var=*/1.0, /*eps_nu_var=*/1.0, opt.omega_mode,
+                                      opt.regime_mode);
   };
 
   const auto obs_update = [&](int /*t*/, const Eigen::VectorXd& y_t, int /*k*/,
@@ -961,9 +963,10 @@ std::string to_string(models::PppfRegimeMode m) {
   return "unknown";
 }
 
-int implied_K(int omega_horizon, int horizon, double omega_var, models::PppfRegimeMode regime_mode) {
+int implied_K(int omega_horizon, int horizon, double omega_var, models::PppfOmegaMode omega_mode,
+              models::PppfRegimeMode regime_mode) {
   const int L = std::min(omega_horizon, horizon);
-  const int d = 2 * L;
+  const int d = (omega_mode == models::PppfOmegaMode::RAndNu) ? (2 * L) : L;
   const int Kut = (d == 0 || omega_var == 0.0) ? 1 : (2 * d + 1);
   if (regime_mode == models::PppfRegimeMode::MixtureBind0 && Kut > 1) return 2 * Kut;
   return Kut;
@@ -1150,7 +1153,8 @@ void run_nk_elb_ablations(const models::NkParams& p_base, int T, int N, int R, c
     row.T = Tc;
     row.N = Nc;
     row.R = Rc;
-    row.K = implied_K(cs.opt.omega_horizon, cs.horizon, cs.opt.omega_var, cs.opt.regime_mode);
+    row.K = implied_K(cs.opt.omega_horizon, cs.horizon, cs.opt.omega_var, cs.opt.omega_mode,
+                      cs.opt.regime_mode);
     row.mean_gap = util::mean(ll) - ll_exact;
     row.sd_loglik = util::stdev(ll);
     row.mean_ess = mean_ess;
