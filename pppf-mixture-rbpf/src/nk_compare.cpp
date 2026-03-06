@@ -297,6 +297,112 @@ RunResult run_occbin_bootstrap_pf(const models::NkParams& p, int N, const Eigen:
   return res;
 }
 
+RunResult run_linear_bootstrap_pf(int N, const Eigen::Matrix2d& A, const Eigen::Matrix2d& Q,
+                                  const Eigen::Matrix<double, 3, 2>& H, const Eigen::Vector3d& d,
+                                  const Eigen::Matrix3d& R, const Eigen::Vector2d& mean0,
+                                  const Eigen::Matrix2d& cov0, const std::vector<Eigen::VectorXd>& y,
+                                  std::uint64_t seed) {
+  util::Rng rng(seed);
+  util::Timer timer;
+  const Eigen::Matrix2d Q_sqrt = Q.llt().matrixL();
+  const Eigen::Matrix2d P0_sqrt = cov0.llt().matrixL();
+
+  const auto transition = [&](Eigen::VectorXd* state, util::Rng& rng_in, int /*t*/) {
+    *state = A * (*state) + Q_sqrt * rng_in.normal_vec(2);
+  };
+  const auto log_obs = [&](const Eigen::VectorXd& state, const Eigen::VectorXd& y_t, int /*t*/) {
+    return util::log_mvnorm_pdf(y_t, H * state + d, R);
+  };
+
+  const filters::PfDiagnostics diag =
+      filters::bootstrap_pf(N, mean0, P0_sqrt, y, transition, log_obs, rng, 0.5);
+
+  RunResult res;
+  res.loglik = diag.loglik;
+  res.runtime_ms = timer.elapsed_ms();
+  res.ess = diag.ess;
+  return res;
+}
+
+RunResult run_linear_copf_pf(int N, const Eigen::Matrix2d& A, const Eigen::Matrix2d& Q,
+                             const Eigen::Matrix<double, 3, 2>& H, const Eigen::Vector3d& d,
+                             const Eigen::Matrix3d& R, const Eigen::Vector2d& mean0,
+                             const Eigen::Matrix2d& cov0, const std::vector<Eigen::VectorXd>& y,
+                             std::uint64_t seed) {
+  util::Rng rng(seed);
+  util::Timer timer;
+
+  struct Particle {
+    Eigen::Vector2d s;
+  };
+
+  const Eigen::Matrix2d P0_sqrt = cov0.llt().matrixL();
+  std::vector<Particle> particles(N);
+  for (int i = 0; i < N; ++i) particles[i].s = mean0 + P0_sqrt * rng.normal_vec(2);
+  Eigen::VectorXd logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+
+  RunResult res;
+  res.ess.reserve(static_cast<int>(y.size()));
+
+  for (int t = 0; t < static_cast<int>(y.size()); ++t) {
+    Eigen::VectorXd logw_new(N);
+    std::vector<Particle> new_particles(N);
+    for (int i = 0; i < N; ++i) {
+      const Eigen::Vector2d m = A * particles[i].s;
+      const Eigen::Matrix2d P = Q;
+      Eigen::Matrix3d S = H * P * H.transpose() + R;
+      Eigen::LLT<Eigen::Matrix3d> lltS(S);
+      if (lltS.info() != Eigen::Success) {
+        S += 1e-12 * Eigen::Matrix3d::Identity();
+        lltS.compute(S);
+        if (lltS.info() != Eigen::Success) throw std::runtime_error("run_linear_copf_pf: S not PD");
+      }
+      const Eigen::Matrix<double, 2, 3> K =
+          P * H.transpose() * lltS.solve(Eigen::Matrix3d::Identity());
+      const Eigen::Vector3d yhat = H * m + d;
+      const Eigen::Vector2d m_post = m + K * (y[t] - yhat);
+      const Eigen::Matrix2d P_post =
+          (Eigen::Matrix2d::Identity() - K * H) * P * (Eigen::Matrix2d::Identity() - K * H).transpose() +
+          K * R * K.transpose();
+
+      Eigen::LLT<Eigen::Matrix2d> lltP(P_post);
+      Eigen::Matrix2d L = Eigen::Matrix2d::Zero();
+      if (lltP.info() == Eigen::Success) {
+        L = lltP.matrixL();
+      } else {
+        const Eigen::Matrix2d Pj = P_post + 1e-12 * Eigen::Matrix2d::Identity();
+        lltP.compute(Pj);
+        if (lltP.info() != Eigen::Success) throw std::runtime_error("run_linear_copf_pf: P_post not PD");
+        L = lltP.matrixL();
+      }
+
+      new_particles[i].s = m_post + L * rng.normal_vec(2);
+      logw_new(i) = logw(i) + util::log_mvnorm_pdf(y[t], yhat, S);
+    }
+
+    const double logZ = util::log_sum_exp(logw_new);
+    res.loglik += logZ;
+    logw_new.array() -= logZ;
+    const double ess_t = util::ess_from_logw(logw_new);
+    res.ess.push_back(ess_t);
+
+    particles.swap(new_particles);
+    if (ess_t < 0.5 * static_cast<double>(N)) {
+      const Eigen::VectorXd w_norm = logw_new.array().exp().matrix();
+      const std::vector<int> idx = filters::systematic_resample(w_norm, rng);
+      std::vector<Particle> repl(N);
+      for (int i = 0; i < N; ++i) repl[i] = particles[idx[i]];
+      particles.swap(repl);
+      logw = Eigen::VectorXd::Constant(N, -std::log(static_cast<double>(N)));
+    } else {
+      logw = logw_new;
+    }
+  }
+
+  res.runtime_ms = timer.elapsed_ms();
+  return res;
+}
+
 RunResult run_pppf_mixture_rbpf(const models::NkParams& p, int N, const Eigen::Vector4d& mean0,
                                const Eigen::Matrix4d& cov0, const std::vector<Eigen::VectorXd>& y,
                                const Eigen::Matrix3d& R, std::uint64_t seed, const PppfOptions& opt) {
@@ -786,8 +892,8 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
 void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::path& out_dir, int T,
                                     int N, int R, const Eigen::Matrix3d& Rm,
                                     std::uint64_t seed_data, int omega_horizon = 1) {
-  // This sanity check removes the ELB kink and uses a continuous (Gaussian) AR(1) DGP for (r,nu),
-  // so that the entire model is linear-Gaussian and the likelihood is available exactly via Kalman.
+  // This benchmark removes the ELB kink and uses a continuous Gaussian AR(1) DGP for (r,nu),
+  // so the model is exactly linear-Gaussian and Kalman provides the exact likelihood benchmark.
   p.i_lower = -1000.0;
 
   util::ensure_dir(out_dir);
@@ -821,10 +927,9 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
                          std::sqrt(Rm(2, 2)) * rng.normal());
     y_obs[t] = y;
   }
-  std::cout << "Simulated NK no-ELB continuous dataset: T=" << T << ", ELB binds in " << bind_count
+  std::cout << "Simulated linear NK dataset: T=" << T << ", ELB binds in " << bind_count
             << " periods\n";
 
-  // Exact Kalman likelihood on state s_t = [r_t, nu_t] with y_t = H s_t + d + eps.
   const Eigen::Matrix2d A = (Eigen::Matrix2d() << p.rho_r, 0.0, 0.0, p.rho_nu).finished();
   const Eigen::Matrix2d Q = (Eigen::Matrix2d() << p.sigma_r * p.sigma_r, 0.0, 0.0,
                          p.sigma_nu * p.sigma_nu)
@@ -840,10 +945,13 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
 
   Eigen::Vector3d d = Eigen::Vector3d::Zero();
   d(2) = p.i_ss;
+  const Eigen::Vector2d s_mean0 = Eigen::Vector2d::Zero();
+  const Eigen::Matrix2d s_cov0 =
+      (Eigen::Matrix2d() << 0.05 * 0.05, 0.0, 0.0, 0.05 * 0.05).finished();
 
   statespace::KalmanState kst;
-  kst.mean = Eigen::Vector2d::Zero();
-  kst.cov = (Eigen::Matrix2d() << 0.05 * 0.05, 0.0, 0.0, 0.05 * 0.05).finished();
+  kst.mean = s_mean0;
+  kst.cov = s_cov0;
 
   double ll_kalman = 0.0;
   for (int t = 0; t < T; ++t) {
@@ -851,7 +959,7 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
     ll_kalman += statespace::kalman_update(H, d, Rm, y_obs[t], &kst);
   }
 
-  // PF-based comparators (OccBin PF and PPPF RBPF), on the same continuous DGP.
+  // PF-based comparators: exact linear bootstrap PF, exact linear COPF, and PPPF RBPF variants.
   const Eigen::Vector4d mean0 = Eigen::Vector4d::Zero();
   Eigen::Matrix4d cov0 = Eigen::Matrix4d::Zero();
   cov0(0, 0) = 0.02 * 0.02;
@@ -873,7 +981,8 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
   std::map<std::string, std::vector<double>> loglik_by_method;
   std::map<std::string, std::vector<double>> rt_by_method;
   std::map<std::string, double> mean_ess_by_method;
-  for (const std::string& method : {"occbin_bootstrap_pf", "pppf_mixture_rbpf", "kalman_exact"}) {
+  for (const std::string& method :
+       {"linear_bootstrap_pf", "linear_copf_exact", "pppf_ce_rbpf", "pppf_q5_rbpf", "kalman_exact"}) {
     loglik_by_method[method] = {};
     rt_by_method[method] = {};
   }
@@ -885,44 +994,80 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
     const std::uint64_t seed_base = 910000ULL + static_cast<std::uint64_t>(rep) * 1000ULL;
 
     {
-      const RunResult rr = run_occbin_bootstrap_pf(p, N, mean0, cov0, y_obs, Rm, seed_base + 1);
-      loglik_by_method["occbin_bootstrap_pf"].push_back(rr.loglik);
-      rt_by_method["occbin_bootstrap_pf"].push_back(rr.runtime_ms);
-      util::write_csv_row(ll_out, "occbin_bootstrap_pf", rep, rr.loglik, rr.runtime_ms);
+      const RunResult rr = run_linear_bootstrap_pf(N, A, Q, H, d, Rm, s_mean0, s_cov0, y_obs, seed_base + 1);
+      loglik_by_method["linear_bootstrap_pf"].push_back(rr.loglik);
+      rt_by_method["linear_bootstrap_pf"].push_back(rr.runtime_ms);
+      util::write_csv_row(ll_out, "linear_bootstrap_pf", rep, rr.loglik, rr.runtime_ms);
       if (rep == 0) {
         double ess_mean = 0.0;
         for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
-          util::write_csv_row(ess_out, "occbin_bootstrap_pf", t, rr.ess[t]);
+          util::write_csv_row(ess_out, "linear_bootstrap_pf", t, rr.ess[t]);
           ess_mean += rr.ess[t];
         }
         ess_mean /= static_cast<double>(rr.ess.size());
-        mean_ess_by_method["occbin_bootstrap_pf"] = ess_mean;
+        mean_ess_by_method["linear_bootstrap_pf"] = ess_mean;
       }
     }
 
-	    {
-	      // In a linear-Gaussian no-ELB model, expectation integration is exact under certainty equivalence.
-	      // To obtain a clean "all methods coincide" sanity check, we therefore set omega_var=0 so that
-	      // PPPF degenerates to a single linear-Gaussian kernel (K=1) and the RBPF coincides with Kalman.
-	      PppfOptions opt;
-	      opt.omega_var = 0.0;
-	      opt.omega_horizon = omega_horizon;
-	      opt.optimal_index_proposal = true;
-	      opt.anchor_mode = AnchorMode::Shared;
-	      opt.i_meas_mode = PppfIMeasMode::Censored;
-	      opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
-	      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 2, opt);
-	      loglik_by_method["pppf_mixture_rbpf"].push_back(rr.loglik);
-	      rt_by_method["pppf_mixture_rbpf"].push_back(rr.runtime_ms);
-	      util::write_csv_row(ll_out, "pppf_mixture_rbpf", rep, rr.loglik, rr.runtime_ms);
+    {
+      const RunResult rr = run_linear_copf_pf(N, A, Q, H, d, Rm, s_mean0, s_cov0, y_obs, seed_base + 2);
+      loglik_by_method["linear_copf_exact"].push_back(rr.loglik);
+      rt_by_method["linear_copf_exact"].push_back(rr.runtime_ms);
+      util::write_csv_row(ll_out, "linear_copf_exact", rep, rr.loglik, rr.runtime_ms);
       if (rep == 0) {
         double ess_mean = 0.0;
         for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
-          util::write_csv_row(ess_out, "pppf_mixture_rbpf", t, rr.ess[t]);
+          util::write_csv_row(ess_out, "linear_copf_exact", t, rr.ess[t]);
           ess_mean += rr.ess[t];
         }
         ess_mean /= static_cast<double>(rr.ess.size());
-        mean_ess_by_method["pppf_mixture_rbpf"] = ess_mean;
+        mean_ess_by_method["linear_copf_exact"] = ess_mean;
+      }
+    }
+
+    {
+      PppfOptions opt;
+      opt.omega_var = 0.0;
+      opt.omega_horizon = omega_horizon;
+      opt.optimal_index_proposal = true;
+      opt.anchor_mode = AnchorMode::Shared;
+      opt.i_meas_mode = PppfIMeasMode::Linear;
+      opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
+      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 3, opt);
+      loglik_by_method["pppf_ce_rbpf"].push_back(rr.loglik);
+      rt_by_method["pppf_ce_rbpf"].push_back(rr.runtime_ms);
+      util::write_csv_row(ll_out, "pppf_ce_rbpf", rep, rr.loglik, rr.runtime_ms);
+      if (rep == 0) {
+        double ess_mean = 0.0;
+        for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
+          util::write_csv_row(ess_out, "pppf_ce_rbpf", t, rr.ess[t]);
+          ess_mean += rr.ess[t];
+        }
+        ess_mean /= static_cast<double>(rr.ess.size());
+        mean_ess_by_method["pppf_ce_rbpf"] = ess_mean;
+      }
+    }
+
+    {
+      PppfOptions opt;
+      opt.omega_var = 1.0;
+      opt.omega_horizon = omega_horizon;
+      opt.optimal_index_proposal = true;
+      opt.anchor_mode = AnchorMode::Shared;
+      opt.i_meas_mode = PppfIMeasMode::Linear;
+      opt.regime_mode = models::PppfRegimeMode::EndogenousByNode;
+      const RunResult rr = run_pppf_mixture_rbpf(p, N, mean0, cov0, y_obs, Rm, seed_base + 4, opt);
+      loglik_by_method["pppf_q5_rbpf"].push_back(rr.loglik);
+      rt_by_method["pppf_q5_rbpf"].push_back(rr.runtime_ms);
+      util::write_csv_row(ll_out, "pppf_q5_rbpf", rep, rr.loglik, rr.runtime_ms);
+      if (rep == 0) {
+        double ess_mean = 0.0;
+        for (int t = 0; t < static_cast<int>(rr.ess.size()); ++t) {
+          util::write_csv_row(ess_out, "pppf_q5_rbpf", t, rr.ess[t]);
+          ess_mean += rr.ess[t];
+        }
+        ess_mean /= static_cast<double>(rr.ess.size());
+        mean_ess_by_method["pppf_q5_rbpf"] = ess_mean;
       }
     }
   }
@@ -931,9 +1076,11 @@ void run_nk_no_elb_continuous_sanity(models::NkParams p, const std::filesystem::
   write_summary_json(summary_json, loglik_by_method, rt_by_method, mean_ess_by_method, T, N, R);
   std::cout << "Wrote " << summary_json.string() << "\n";
 
-  std::cout << "No-ELB sanity mean loglik gaps vs kalman_exact: "
-            << "OccBin=" << util::mean(loglik_by_method["occbin_bootstrap_pf"]) - ll_kalman << ", "
-            << "PPPF=" << util::mean(loglik_by_method["pppf_mixture_rbpf"]) - ll_kalman << "\n";
+  std::cout << "Linear NK mean loglik gaps vs kalman_exact: "
+            << "BSPF=" << util::mean(loglik_by_method["linear_bootstrap_pf"]) - ll_kalman << ", "
+            << "COPF=" << util::mean(loglik_by_method["linear_copf_exact"]) - ll_kalman << ", "
+            << "PPPF-CE=" << util::mean(loglik_by_method["pppf_ce_rbpf"]) - ll_kalman << ", "
+            << "PPPF-Q5=" << util::mean(loglik_by_method["pppf_q5_rbpf"]) - ll_kalman << "\n";
 
   std::cout << "Wrote " << ll_csv.string() << "\n";
   std::cout << "Wrote " << ess_csv.string() << "\n";
@@ -1357,7 +1504,7 @@ CliOptions parse_args(int argc, char** argv) {
     } else if (a == "--no_sanity") {
       opt.run_sanity = false;
     } else if (a == "--help" || a == "-h") {
-      std::cout << "Usage: nk_compare [--mode baseline|ablations] [--T int] [--N int] [--R int]\\n";
+      std::cout << "Usage: nk_compare [--mode baseline|linear|ablations] [--T int] [--N int] [--R int]\\n";
       std::cout << "                 [--horizon int] [--omega_horizon int] [--anchor shared|clustered|per_particle] [--out_dir path]\\n";
       std::cout << "                 [--out_dir_abl path] [--paper_table path]\\n";
       std::cout << "                 [--seed_data uint64] [--seed_sanity uint64] [--out_dir_sanity path] [--no_sanity]\\n";
@@ -1409,10 +1556,14 @@ int main(int argc, char** argv) {
       run_nk_experiment(cfg1, cli.T, cli.N, cli.R, Rm);
 
       if (cli.run_sanity) {
-        std::cout << "\n=== NK sanity check (no ELB; linear-Gaussian; all methods should coincide) ===\n";
-        run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, 2048, 10, Rm, cli.seed_sanity,
+        std::cout << "\n=== Linear NK benchmark (no ELB; exact Kalman/COPF available) ===\n";
+        run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, cli.N, cli.R, Rm, cli.seed_sanity,
                                         /*omega_horizon=*/cfg1.omega_horizon);
       }
+    } else if (cli.mode == "linear") {
+      std::cout << "\n=== Linear NK benchmark (no ELB; exact Kalman/COPF available) ===\n";
+      run_nk_no_elb_continuous_sanity(p, cli.out_dir_sanity, cli.T, cli.N, cli.R, Rm, cli.seed_sanity,
+                                      cli.omega_horizon);
     } else if (cli.mode == "ablations") {
       std::cout << "\n=== NK-ELB ablation suite ===\n";
       run_nk_elb_ablations(p, cli.T, cli.N, cli.R, Rm, cli.seed_data, cli.out_dir_abl, cli.paper_table);
