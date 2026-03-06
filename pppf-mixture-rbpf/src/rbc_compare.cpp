@@ -1,5 +1,4 @@
 #include "filters/resampling.hpp"
-#include "quadrature/sigma_points.hpp"
 #include "solvers/newton.hpp"
 #include "statespace/gaussian_mixture.hpp"
 #include "util/io.hpp"
@@ -41,6 +40,7 @@ struct CliOptions {
   int Nz = 9;
   int horizon = 4;
   double omega_var = 1.0;
+  int pppf_paths = 5;
   double k_width = 0.45;
   double z_width_sd = 3.0;
   double meas_sd = 0.02;
@@ -82,7 +82,7 @@ struct PfDiagnostics {
   std::vector<double> ess;
 };
 
-enum class PppfMode { CE, UTPathBank };
+enum class PppfMode { CE, PathBank };
 
 CliOptions parse_args(int argc, char** argv) {
   CliOptions opt;
@@ -106,6 +106,8 @@ CliOptions parse_args(int argc, char** argv) {
       opt.horizon = std::stoi(need(a));
     } else if (a == "--omega_var") {
       opt.omega_var = std::stod(need(a));
+    } else if (a == "--pppf_paths") {
+      opt.pppf_paths = std::stoi(need(a));
     } else if (a == "--k_width") {
       opt.k_width = std::stod(need(a));
     } else if (a == "--z_width_sd") {
@@ -118,7 +120,7 @@ CliOptions parse_args(int argc, char** argv) {
       opt.out_dir = need(a);
     } else if (a == "-h" || a == "--help") {
       std::cout << "Usage: rbc_compare [--T int] [--N int] [--R int] [--Nk int] [--Nz int] [--horizon int] "
-                   "[--omega_var double] "
+                   "[--omega_var double] [--pppf_paths int] "
                    "[--k_width double] [--z_width_sd double] [--meas_sd double] "
                    "[--seed_data uint64] [--out_dir path]\n";
       std::exit(0);
@@ -131,6 +133,7 @@ CliOptions parse_args(int argc, char** argv) {
   if (opt.Nz < 5) throw std::invalid_argument("Nz must be >= 5");
   if (opt.horizon < 2) throw std::invalid_argument("horizon must be >= 2");
   if (!(opt.omega_var >= 0.0)) throw std::invalid_argument("omega_var must be nonnegative");
+  if (opt.pppf_paths <= 0) throw std::invalid_argument("pppf_paths must be positive");
   if (!(opt.k_width > 0.0) || !(opt.z_width_sd > 0.0) || !(opt.meas_sd > 0.0)) {
     throw std::invalid_argument("widths and meas_sd must be positive");
   }
@@ -393,6 +396,41 @@ std::vector<double> build_future_z_path(const RbcSolution& sol, double z0, const
   return z;
 }
 
+std::vector<Eigen::VectorXd> make_zero_mean_path_bank(int horizon, int num_paths, double omega_var) {
+  std::vector<Eigen::VectorXd> bank;
+  bank.reserve(num_paths);
+  if (num_paths == 1 || omega_var == 0.0) {
+    bank.push_back(Eigen::VectorXd::Zero(horizon));
+    return bank;
+  }
+
+  // Deterministic scenario bank: equally weighted paths, recentered to have exactly zero
+  // mean across paths at each horizon, then rescaled to target marginal variance omega_var.
+  Eigen::MatrixXd paths = Eigen::MatrixXd::Zero(num_paths, horizon);
+  for (int m = 0; m < num_paths; ++m) {
+    for (int h = 0; h < horizon; ++h) {
+      const double angle1 =
+          2.0 * M_PI * static_cast<double>((m + 1) * (h + 1)) / static_cast<double>(num_paths + horizon + 1);
+      const double angle2 =
+          2.0 * M_PI * static_cast<double>((m + 1) * (2 * h + 3)) / static_cast<double>(2 * num_paths + horizon + 3);
+      paths(m, h) = std::sin(angle1) + 0.5 * std::cos(angle2);
+    }
+  }
+
+  for (int h = 0; h < horizon; ++h) {
+    paths.col(h).array() -= paths.col(h).mean();
+    const double var_h = paths.col(h).array().square().mean();
+    if (var_h > 1e-14) {
+      paths.col(h) *= std::sqrt(omega_var / var_h);
+    } else {
+      paths.col(h).setZero();
+    }
+  }
+
+  for (int m = 0; m < num_paths; ++m) bank.push_back(paths.row(m).transpose());
+  return bank;
+}
+
 double solve_rbc_path_k1(const RbcSolution& sol, double k0, double z0, const std::vector<double>& omega_path,
                          int horizon) {
   const std::vector<double> z_path = build_future_z_path(sol, z0, omega_path, horizon);
@@ -448,23 +486,15 @@ Eigen::Vector2d rbc_pppf_mean_map(const RbcSolution& sol, const Eigen::Vector2d&
 
 statespace::GaussianMixtureTransition build_rbc_pppf_mixture(const RbcSolution& sol, const Eigen::Vector2d& x_ref,
                                                              int horizon, PppfMode mode, double omega_var = 1.0,
-                                                             double fd_eps = 1e-5) {
+                                                             int num_paths = 5, double fd_eps = 1e-5) {
   std::vector<Eigen::VectorXd> omega_nodes;
   std::vector<double> omega_weights;
   if (mode == PppfMode::CE || omega_var == 0.0) {
     omega_nodes.push_back(Eigen::VectorXd::Zero(horizon));
     omega_weights.push_back(1.0);
   } else {
-    const Eigen::VectorXd omega_mean = Eigen::VectorXd::Zero(horizon);
-    const Eigen::MatrixXd omega_cov = omega_var * Eigen::MatrixXd::Identity(horizon, horizon);
-    const auto sp = quadrature::unscented_sigma_points(omega_mean, omega_cov, /*alpha=*/1.0,
-                                                       /*kappa=*/2.0, /*beta=*/2.0);
-    omega_nodes.reserve(sp.points.rows());
-    omega_weights.reserve(sp.points.rows());
-    for (int j = 0; j < sp.points.rows(); ++j) {
-      omega_nodes.push_back(sp.points.row(j).transpose());
-      omega_weights.push_back(sp.w_mean(j));
-    }
+    omega_nodes = make_zero_mean_path_bank(horizon, num_paths, omega_var);
+    omega_weights.assign(omega_nodes.size(), 1.0 / static_cast<double>(omega_nodes.size()));
   }
 
   statespace::GaussianMixtureTransition mix;
@@ -657,6 +687,7 @@ PfDiagnostics bootstrap_pf(const RbcSolution& sol, int N, const std::vector<Eige
 
 PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon, int N,
                               const std::vector<Eigen::VectorXd>& y, double meas_sd, double omega_var,
+                              int num_paths,
                               std::uint64_t seed, double ess_frac = 0.5) {
   util::Rng rng(seed);
   const double k_ss = rbc_steady_state_k(sol.p);
@@ -676,7 +707,7 @@ PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon
       x_ref(1) += w_norm(i) * particles[i].z;
     }
     const statespace::GaussianMixtureTransition mix =
-        build_rbc_pppf_mixture(sol, x_ref, horizon, mode, omega_var);
+        build_rbc_pppf_mixture(sol, x_ref, horizon, mode, omega_var, num_paths);
 
     Eigen::VectorXd logw_new(N);
     std::vector<RbcState> new_particles(N);
@@ -784,6 +815,7 @@ void write_summary_json(const std::filesystem::path& path,
   oss << "    \"Nz\": " << cli.Nz << ",\n";
   oss << "    \"horizon\": " << cli.horizon << ",\n";
   oss << "    \"omega_var\": " << cli.omega_var << ",\n";
+  oss << "    \"pppf_paths\": " << cli.pppf_paths << ",\n";
   oss << "    \"meas_sd\": " << cli.meas_sd << "\n";
   oss << "  },\n";
   oss << "  \"methods\": {\n";
@@ -857,7 +889,7 @@ int main(int argc, char** argv) {
     };
     const std::vector<std::pair<std::string, PppfMode>> pppf_methods = {
         {"pppf_ce", PppfMode::CE},
-        {"pppf_ut_paths", PppfMode::UTPathBank},
+        {"pppf_m_paths", PppfMode::PathBank},
     };
 
     {
@@ -907,6 +939,7 @@ int main(int argc, char** argv) {
       for (int rep = 0; rep < cli.R; ++rep) {
         util::Timer timer;
         const PfDiagnostics diag = pppf_mixture_pf(sol, mode, cli.horizon, cli.N, y, cli.meas_sd, cli.omega_var,
+                                                   cli.pppf_paths,
                                                    770000ULL + static_cast<std::uint64_t>(rep) * 29ULL);
         const double rt = timer.elapsed_ms();
         loglik_by_method[name].push_back(diag.loglik);
