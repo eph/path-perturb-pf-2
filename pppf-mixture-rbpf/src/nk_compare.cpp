@@ -577,6 +577,53 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
   cov0(2, 2) = 0.05 * 0.05;
   cov0(3, 3) = 0.05 * 0.05;
 
+  // IRFs: compute before running the filters so benchmark-side memory issues do not contaminate
+  // the direct transition diagnostic.
+  const int Tirf = 40;
+  const double shock_eps_r = cfg.shock_eps_r_irf;
+
+  std::vector<double> irf_x_occ(Tirf), irf_pi_occ(Tirf), irf_i_occ(Tirf);
+  std::vector<double> irf_x_pppf(Tirf), irf_pi_pppf(Tirf), irf_i_pppf(Tirf);
+  std::vector<double> irf_x_glob(Tirf), irf_pi_glob(Tirf), irf_i_glob(Tirf);
+  std::vector<double> irf_x_plc(Tirf), irf_pi_plc(Tirf), irf_i_plc(Tirf);
+
+  double r_prev = 0.0;
+  double nu_prev = 0.0;
+  for (int t = 0; t < Tirf; ++t) {
+    const double eps_r = (t == 0) ? shock_eps_r : 0.0;
+    const double eps_nu = 0.0;
+    const double r_t = p.rho_r * r_prev + p.sigma_r * eps_r;
+    const double nu_t = p.rho_nu * nu_prev + p.sigma_nu * eps_nu;
+
+    std::vector<double> zeros_r(p.horizon, 0.0);
+    std::vector<double> zeros_nu(p.horizon, 0.0);
+    const models::NkPath path = models::solve_nk_occbin_path(p, r_t, nu_t, zeros_r, zeros_nu);
+
+    irf_x_occ[t] = path.x[0];
+    irf_pi_occ[t] = path.pi[0];
+    irf_i_occ[t] = path.i[0];
+
+    r_prev = r_t;
+    nu_prev = nu_t;
+  }
+
+  expected_irf_pppf_anchor_mc(p, Tirf, shock_eps_r, cfg.omega_horizon, cfg.anchor_mode, &irf_x_pppf,
+                              &irf_pi_pppf, &irf_i_pppf);
+  models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
+
+  double r_m = 0.0;
+  double nu_m = 0.0;
+  for (int t = 0; t < Tirf; ++t) {
+    const double eps_r = (t == 0) ? shock_eps_r : 0.0;
+    const double eps_nu = 0.0;
+    r_m = p.rho_r * r_m + p.sigma_r * eps_r;
+    nu_m = p.rho_nu * nu_m + p.sigma_nu * eps_nu;
+    const Eigen::Vector3d yplc = models::nk_observables_plc(p, grid, r_m, nu_m);
+    irf_pi_plc[t] = yplc(0);
+    irf_x_plc[t] = yplc(1);
+    irf_i_plc[t] = yplc(2);
+  }
+
   // Repeated likelihood runs.
   const std::filesystem::path ll_csv = out_dir / "loglik_repeats.csv";
   std::ofstream ll_out(ll_csv);
@@ -705,58 +752,6 @@ void run_nk_experiment(const NkExperimentConfig& cfg, int T, int N, int R, const
             << "OccBin=" << util::mean(loglik_by_method["occbin_bootstrap_pf"]) - ll_exact << ", "
             << "PPPF=" << util::mean(loglik_by_method["pppf_mixture_rbpf"]) - ll_exact << ", "
             << "PLC=" << util::mean(loglik_by_method["plc_copf_pf"]) - ll_exact << "\n";
-
-  // IRFs: a negative natural-rate impulse at t=0.
-  const int Tirf = 40;
-  const double shock_eps_r = cfg.shock_eps_r_irf;
-
-  std::vector<double> irf_x_occ(Tirf), irf_pi_occ(Tirf), irf_i_occ(Tirf);
-  std::vector<double> irf_x_pppf(Tirf), irf_pi_pppf(Tirf), irf_i_pppf(Tirf);
-  std::vector<double> irf_x_glob(Tirf), irf_pi_glob(Tirf), irf_i_glob(Tirf);
-  std::vector<double> irf_x_plc(Tirf), irf_pi_plc(Tirf), irf_i_plc(Tirf);
-
-  double r_prev = 0.0;
-  double nu_prev = 0.0;
-  for (int t = 0; t < Tirf; ++t) {
-    const double eps_r = (t == 0) ? shock_eps_r : 0.0;
-    const double eps_nu = 0.0;
-    const double r_t = p.rho_r * r_prev + p.sigma_r * eps_r;
-    const double nu_t = p.rho_nu * nu_prev + p.sigma_nu * eps_nu;
-
-    std::vector<double> zeros_r(p.horizon, 0.0);
-    std::vector<double> zeros_nu(p.horizon, 0.0);
-    const models::NkPath path = models::solve_nk_occbin_path(p, r_t, nu_t, zeros_r, zeros_nu);
-
-    irf_x_occ[t] = path.x[0];
-    irf_pi_occ[t] = path.pi[0];
-    irf_i_occ[t] = path.i[0];
-
-    r_prev = r_t;
-    nu_prev = nu_t;
-  }
-
-  // PPPF expected IRF: simulate the approximate PPPF transition kernel directly.
-  // This is more comparable to the stochastic global benchmark than collapsing the mixture
-  // recursion to a single Gaussian mean/covariance process at each step.
-  expected_irf_pppf_anchor_mc(p, Tirf, shock_eps_r, cfg.omega_horizon, cfg.anchor_mode, &irf_x_pppf,
-                              &irf_pi_pppf, &irf_i_pppf);
-
-  // Global stochastic solution on a discrete Markov chain (state-space, expectation-consistent).
-  models::expected_irf_global(p, grid, shock_eps_r, Tirf, &irf_x_glob, &irf_pi_glob, &irf_i_glob);
-
-  // PLC interpolation IRF: propagate mean exogenous state under the impulse and map to observables.
-  double r_m = 0.0;
-  double nu_m = 0.0;
-  for (int t = 0; t < Tirf; ++t) {
-    const double eps_r = (t == 0) ? shock_eps_r : 0.0;
-    const double eps_nu = 0.0;
-    r_m = p.rho_r * r_m + p.sigma_r * eps_r;
-    nu_m = p.rho_nu * nu_m + p.sigma_nu * eps_nu;
-    const Eigen::Vector3d yplc = models::nk_observables_plc(p, grid, r_m, nu_m);
-    irf_pi_plc[t] = yplc(0);
-    irf_x_plc[t] = yplc(1);
-    irf_i_plc[t] = yplc(2);
-  }
 
   const std::filesystem::path irf_csv = out_dir / "irf.csv";
   std::ofstream irf_out(irf_csv);

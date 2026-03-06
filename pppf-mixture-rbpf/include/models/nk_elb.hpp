@@ -196,7 +196,6 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
   const int L = std::min(omega_horizon, p.horizon);
   const int d = (omega_mode == PppfOmegaMode::RAndNu) ? (2 * L) : L;
 
-  const auto normal_cdf = [&](double z) { return 0.5 * (1.0 + std::erf(z / std::sqrt(2.0))); };
   auto unpack_omega_paths = [&](const Eigen::VectorXd& omega_node, std::vector<double>& eps_r_path,
                                 std::vector<double>& eps_nu_path) {
     if (omega_node.size() == 0) return;
@@ -223,10 +222,43 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     return std::pair<double, double>{p.rho_r * z_ref(2) + p.sigma_r * eps_r,
                                      p.rho_nu * z_ref(3) + p.sigma_nu * eps_nu};
   };
+  auto shadow_gap = [&](const Eigen::Vector4d& z) {
+    return p.i_ss + p.phi_pi * z(1) + p.phi_x * z(0) + z(3) - p.i_lower;
+  };
+  auto elb_risk_score = [&]() {
+    const Eigen::VectorXd omega0 = Eigen::VectorXd::Zero(0);
+    const Eigen::Vector4d z_det =
+        nk_transition_markov_anticipated(p, z_ref, unexpected_eps_r_mean, 0.0, omega0, omega_mode);
+    return std::min(shadow_gap(z_ref), shadow_gap(z_det));
+  };
+  const bool use_discrete_shock_closure =
+      (unexpected_eps_r_var > 0.0 || unexpected_eps_nu_var > 0.0) && (elb_risk_score() <= 0.02);
+
+  struct ShockNode {
+    double eps_r = 0.0;
+    double eps_nu = 0.0;
+    double weight = 1.0;
+  };
+  std::vector<ShockNode> shock_nodes;
+  if (use_discrete_shock_closure) {
+    Eigen::Vector2d eps_mean = Eigen::Vector2d::Zero();
+    eps_mean(0) = unexpected_eps_r_mean;
+    Eigen::Matrix2d eps_cov = Eigen::Matrix2d::Zero();
+    eps_cov(0, 0) = unexpected_eps_r_var;
+    eps_cov(1, 1) = unexpected_eps_nu_var;
+    const auto eps_sp = quadrature::unscented_sigma_points(eps_mean, eps_cov, /*alpha=*/1.0,
+                                                           /*kappa=*/2.0, /*beta=*/2.0);
+    shock_nodes.reserve(eps_sp.points.rows());
+    for (int q = 0; q < eps_sp.points.rows(); ++q) {
+      shock_nodes.push_back(ShockNode{eps_sp.points(q, 0), eps_sp.points(q, 1), eps_sp.w_mean(q)});
+    }
+  } else {
+    shock_nodes.push_back(ShockNode{unexpected_eps_r_mean, 0.0, 1.0});
+  }
 
   // Special case: omega is degenerate (or absent) => a single component (exactly), which is
   // important for the "all methods coincide" no-ELB sanity check.
-  if (d == 0 || omega_var == 0.0) {
+  if ((d == 0 || omega_var == 0.0) && !use_discrete_shock_closure) {
     const Eigen::VectorXd omega0 = Eigen::VectorXd::Zero(d);
     const auto [r_next0, nu_next0] = shocked_anchor_state(unexpected_eps_r_mean, 0.0);
     std::vector<double> eps_r_path(p.horizon, 0.0);
@@ -276,13 +308,26 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
 
   // For a *probability* mixture (RBPF needs to sample indices), we require nonnegative weights.
   // Using alpha=1 and kappa=2 yields lambda=2 (hence w0>0) and positive weights in any dimension.
-  const Eigen::VectorXd omega_mean = Eigen::VectorXd::Zero(d);
-  const Eigen::MatrixXd omega_cov = omega_var * Eigen::MatrixXd::Identity(d, d);
-  const double alpha_ut = 1.0;
-  const double kappa_ut = 2.0;
-  const double beta_ut = 2.0;
-  const auto sp = quadrature::unscented_sigma_points(omega_mean, omega_cov, alpha_ut, kappa_ut, beta_ut);
-  const int K = static_cast<int>(sp.points.rows());
+  std::vector<Eigen::VectorXd> omega_nodes;
+  std::vector<double> omega_weights;
+  if (d == 0 || omega_var == 0.0) {
+    omega_nodes.push_back(Eigen::VectorXd::Zero(d));
+    omega_weights.push_back(1.0);
+  } else {
+    const Eigen::VectorXd omega_mean = Eigen::VectorXd::Zero(d);
+    const Eigen::MatrixXd omega_cov = omega_var * Eigen::MatrixXd::Identity(d, d);
+    const double alpha_ut = 1.0;
+    const double kappa_ut = 2.0;
+    const double beta_ut = 2.0;
+    const auto sp =
+        quadrature::unscented_sigma_points(omega_mean, omega_cov, alpha_ut, kappa_ut, beta_ut);
+    omega_nodes.reserve(sp.points.rows());
+    omega_weights.reserve(sp.points.rows());
+    for (int k = 0; k < sp.points.rows(); ++k) {
+      omega_nodes.push_back(sp.points.row(k).transpose());
+      omega_weights.push_back(sp.w_mean(k));
+    }
+  }
 
   statespace::GaussianMixtureTransition mix;
   mix.components.clear();
@@ -304,12 +349,13 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     Eigen::Vector4d z_mean;
   };
 
-  auto linearize_one = [&](const Eigen::VectorXd& omega_node,
-                           std::optional<int> bind0_override) -> LinTrans {
+  auto regime_path_for_anchor = [&](const Eigen::VectorXd& omega_node, double eps_r_anchor,
+                                    double eps_nu_anchor,
+                                    std::optional<int> bind0_override) -> std::vector<int> {
     std::vector<double> eps_r0(p.horizon, 0.0);
     std::vector<double> eps_nu0(p.horizon, 0.0);
     unpack_omega_paths(omega_node, eps_r0, eps_nu0);
-    const auto [r_next0, nu_next0] = shocked_anchor_state(unexpected_eps_r_mean, 0.0);
+    const auto [r_next0, nu_next0] = shocked_anchor_state(eps_r_anchor, eps_nu_anchor);
     NkPath base_path;
     if (bind0_override.has_value()) {
       base_path =
@@ -319,7 +365,13 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     } else {
       base_path = solve_nk_occbin_path(p, r_next0, nu_next0, eps_r0, eps_nu0);
     }
-    const std::vector<int> bind_path = base_path.bind;
+    return base_path.bind;
+  };
+
+  auto linearize_gaussianized = [&](const Eigen::VectorXd& omega_node,
+                                    std::optional<int> bind0_override) -> LinTrans {
+    const std::vector<int> bind_path =
+        regime_path_for_anchor(omega_node, unexpected_eps_r_mean, 0.0, bind0_override);
 
     auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
       const Eigen::Vector4d z4 = z_in;
@@ -345,6 +397,27 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     Eigen::Matrix4d Q =
         unexpected_eps_r_var * (Br * Br.transpose()) + unexpected_eps_nu_var * (Bn * Bn.transpose());
     Q += 1e-10 * Eigen::Matrix4d::Identity();
+    return LinTrans{A, a, Q, z_mean};
+  };
+
+  auto linearize_fixed_shock = [&](const Eigen::VectorXd& omega_node, double eps_r_anchor,
+                                   double eps_nu_anchor,
+                                   std::optional<int> bind0_override) -> LinTrans {
+    const std::vector<int> bind_path =
+        regime_path_for_anchor(omega_node, eps_r_anchor, eps_nu_anchor, bind0_override);
+
+    auto g = [&](const Eigen::VectorXd& z_in) -> Eigen::VectorXd {
+      const Eigen::Vector4d z4 = z_in;
+      return nk_transition_markov_anticipated_given_bind(p, z4, eps_r_anchor, eps_nu_anchor, omega_node,
+                                                         bind_path, omega_mode);
+    };
+
+    const Eigen::MatrixXd A = solvers::finite_diff_jacobian(g, z_ref, fd_eps);
+    const Eigen::Vector4d z_mean =
+        nk_transition_markov_anticipated_given_bind(p, z_ref, eps_r_anchor, eps_nu_anchor, omega_node,
+                                                    bind_path, omega_mode);
+    const Eigen::Vector4d a = z_mean - A * z_ref;
+    const Eigen::Matrix4d Q = 1e-10 * Eigen::Matrix4d::Identity();
     return LinTrans{A, a, Q, z_mean};
   };
 
@@ -379,22 +452,40 @@ inline statespace::GaussianMixtureTransition build_pppf_mixture(const NkParams& 
     return std::min(1.0, std::max(0.0, p_bind));
   };
 
-  for (int k = 0; k < K; ++k) {
-    const Eigen::VectorXd omega_node = sp.points.row(k).transpose();
-    const double w_node = sp.w_mean(k);
+  for (int k = 0; k < static_cast<int>(omega_nodes.size()); ++k) {
+    const Eigen::VectorXd& omega_node = omega_nodes[k];
+    const double w_node = omega_weights[k];
     if (w_node < 0.0) {
       throw std::runtime_error("build_pppf_mixture: negative quadrature weight (not a mixture)");
     }
 
     if (regime_mode != PppfRegimeMode::MixtureBind0) {
-      const LinTrans lt = linearize_one(omega_node, std::nullopt);
-      mix.components.push_back(statespace::LinearGaussianTransition{lt.A, lt.a, lt.Q});
-      mix.weights.push_back(w_node);
+      for (const auto& shock_node : shock_nodes) {
+        if (shock_node.weight <= 0.0) continue;
+        const LinTrans lt = use_discrete_shock_closure
+                                ? linearize_fixed_shock(omega_node, shock_node.eps_r, shock_node.eps_nu,
+                                                        std::nullopt)
+                                : linearize_gaussianized(omega_node, std::nullopt);
+        mix.components.push_back(statespace::LinearGaussianTransition{lt.A, lt.a, lt.Q});
+        mix.weights.push_back(w_node * shock_node.weight);
+        if (!use_discrete_shock_closure) break;
+      }
       continue;
     }
 
-    const LinTrans lt_slack = linearize_one(omega_node, /*bind0_override=*/0);
-    const LinTrans lt_bind = linearize_one(omega_node, /*bind0_override=*/1);
+    if (use_discrete_shock_closure) {
+      for (const auto& shock_node : shock_nodes) {
+        if (shock_node.weight <= 0.0) continue;
+        const LinTrans lt =
+            linearize_fixed_shock(omega_node, shock_node.eps_r, shock_node.eps_nu, std::nullopt);
+        mix.components.push_back(statespace::LinearGaussianTransition{lt.A, lt.a, lt.Q});
+        mix.weights.push_back(w_node * shock_node.weight);
+      }
+      continue;
+    }
+
+    const LinTrans lt_slack = linearize_gaussianized(omega_node, /*bind0_override=*/0);
+    const LinTrans lt_bind = linearize_gaussianized(omega_node, /*bind0_override=*/1);
 
     const double p_bind = bind0_probability_cubature(omega_node);
 
