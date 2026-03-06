@@ -30,6 +30,8 @@ struct NkParams {
   int horizon = 20;
   int max_regime_iter = 50;
   double regime_tol = 1e-12;
+  bool use_slack_linear_tail = false;
+  double tail_tol = 1e-8;
 };
 
 struct NkPath {
@@ -42,6 +44,42 @@ struct NkPath {
 
   int H() const { return static_cast<int>(x.size()) - 1; }
 };
+
+// Infinite-horizon slack-regime tail for the linear NK system with deterministic AR(1)
+// continuation of the exogenous states and no further shocks.
+//
+// The tail is used as a terminal condition for finite-horizon OccBin/PPPF path solves.
+// It replaces the crude x_H = pi_H = 0 closure with the exact linear no-ELB continuation
+// implied by the current terminal exogenous state (r_H, nu_H).
+inline Eigen::Vector2d nk_slack_terminal_tail_raw(const NkParams& p, double r_H, double nu_H) {
+  if (!(p.sigma > 0.0)) throw std::invalid_argument("nk_slack_terminal_tail: sigma<=0");
+
+  const double inv_sigma = 1.0 / p.sigma;
+
+  auto solve_driver = [&](double rho_s, double c_is) -> Eigen::Vector2d {
+    Eigen::Matrix2d M;
+    Eigen::Vector2d rhs;
+    M << 1.0 + inv_sigma * p.phi_x - rho_s, inv_sigma * (p.phi_pi - rho_s), -p.kappa,
+        1.0 - p.beta * rho_s;
+    rhs << -c_is, 0.0;
+    return M.fullPivLu().solve(rhs);
+  };
+
+  const Eigen::Vector2d coeff_const = solve_driver(1.0, inv_sigma * (p.i_ss - p.r_ss));
+  // For the slack regime, the IS residual contains inv_sigma * (nu_t - r_t).
+  const Eigen::Vector2d coeff_r = solve_driver(p.rho_r, -inv_sigma);
+  const Eigen::Vector2d coeff_nu = solve_driver(p.rho_nu, +inv_sigma);
+
+  return coeff_const + coeff_r * r_H + coeff_nu * nu_H;
+}
+
+inline Eigen::Vector2d nk_terminal_tail(const NkParams& p, double r_H, double nu_H) {
+  if (!p.use_slack_linear_tail) return Eigen::Vector2d::Zero();
+  const Eigen::Vector2d tail = nk_slack_terminal_tail_raw(p, r_H, nu_H);
+  const double i_shadow = p.i_ss + p.phi_pi * tail(1) + p.phi_x * tail(0) + nu_H;
+  if (i_shadow <= p.i_lower + p.tail_tol) return Eigen::Vector2d::Zero();
+  return tail;
+}
 
 inline NkPath solve_nk_occbin_path(const NkParams& p, double r0, double nu0,
                                    const std::vector<double>& eps_r,
@@ -72,8 +110,9 @@ inline NkPath solve_nk_occbin_path(const NkParams& p, double r0, double nu0,
                                 std::vector<double>* pi) {
     x->assign(H + 1, 0.0);
     pi->assign(H + 1, 0.0);
-    (*x)[H] = 0.0;
-    (*pi)[H] = 0.0;
+    const Eigen::Vector2d tail = nk_terminal_tail(p, path.r[H], path.nu[H]);
+    (*x)[H] = tail(0);
+    (*pi)[H] = tail(1);
 
     for (int t = H - 1; t >= 0; --t) {
       Eigen::Matrix2d A;
@@ -170,8 +209,11 @@ inline NkPath solve_nk_occbin_path_given_bind(const NkParams& p, double r0, doub
 
   path.x.assign(H + 1, 0.0);
   path.pi.assign(H + 1, 0.0);
-  path.x[H] = 0.0;
-  path.pi[H] = 0.0;
+  {
+    const Eigen::Vector2d tail = nk_terminal_tail(p, path.r[H], path.nu[H]);
+    path.x[H] = tail(0);
+    path.pi[H] = tail(1);
+  }
   for (int t = H - 1; t >= 0; --t) {
     Eigen::Matrix2d A;
     Eigen::Matrix2d B;
@@ -237,8 +279,9 @@ inline NkPath solve_nk_occbin_path_conditional_bind0(const NkParams& p, double r
                                 std::vector<double>* pi) {
     x->assign(H + 1, 0.0);
     pi->assign(H + 1, 0.0);
-    (*x)[H] = 0.0;
-    (*pi)[H] = 0.0;
+    const Eigen::Vector2d tail = nk_terminal_tail(p, path.r[H], path.nu[H]);
+    (*x)[H] = tail(0);
+    (*pi)[H] = tail(1);
 
     for (int t = H - 1; t >= 0; --t) {
       Eigen::Matrix2d A;
