@@ -20,6 +20,12 @@ add_executable(burnside_filter_compare
 target_include_directories(burnside_filter_compare PRIVATE include)
 target_link_libraries(burnside_filter_compare PRIVATE Eigen3::Eigen)
 
+add_executable(rbc_compare
+  src/rbc_compare.cpp
+)
+target_include_directories(rbc_compare PRIVATE include)
+target_link_libraries(rbc_compare PRIVATE Eigen3::Eigen)
+
 add_executable(nk_compare
   src/nk_compare.cpp
 )
