@@ -612,10 +612,10 @@ Because the conditional sum of future $x_{t+s}$ is Gaussian under \eqref{eq:burn
 The exact benchmark in this section is therefore an analytic infinite-series object rather than a separate numerical global solution.
 
 The certainty-equivalence approximation drops the conditional variance terms implicit in \eqref{eq:burnside_series}.
-The quadrature approximation instead integrates the one-step shock $\varepsilon_{t+1}$ with a positive-weight sigma-point rule and uses certainty equivalence only for the continuation term beyond $t+1$.
+The quadrature approximation instead integrates the one-step shock $\varepsilon_{t+1}$ with a positive-weight sigma-point rule while keeping the continuation value exact.
 This is not yet a full PPPF likelihood problem.
 There is no filtering recursion and no discrete regime index.
-Its role is narrower and cleaner: it shows how much of the smooth nonlinear error comes from replacing a curved expectation by a degenerate or low-order approximation.
+Its role is narrower and cleaner: it shows how much of the smooth nonlinear error comes from replacing a curved Gaussian expectation by either a degenerate one-node rule or a nondegenerate low-order quadrature rule, holding the continuation object fixed.
 
 \section{Benchmark: a New Keynesian model with an ELB}
 \label{sec:nk_benchmark}
@@ -699,14 +699,17 @@ That distinction is essential: the benchmark is a high-quality comparison object
 \subsection{Illustrative results}
 
 We begin with the smooth example, the Burnside asset-pricing recursion, for which the exact continuation value is available from the analytic series \eqref{eq:burnside_series}.
-Figure~\ref{fig:burnside_irf} reports the response of the continuation value to a one-standard-deviation shock to $x_0$ under the exact benchmark, certainty equivalence, and a one-step sigma-point quadrature approximation.
+Figure~\ref{fig:burnside_irf} reports the response of the continuation value to a one-standard-deviation shock to $x_0$ under the exact benchmark, certainty equivalence, and a one-step positive-weight sigma-point quadrature approximation with exact continuation.
 The certainty-equivalence curve misses most of the nonlinear amplification created by the exponential pricing kernel.
-The one-step quadrature correction remains crude, but it moves the approximation in the right direction by restoring part of the missing curvature effect.
+By contrast, the quadrature curve is almost indistinguishable from the analytic benchmark in this scalar Gaussian environment.
+That result should be interpreted narrowly.
+It does not show that low-order quadrature is universally accurate.
+It shows that, once the continuation object is held fixed, the Jensen effect in this smooth one-dimensional expectation can be captured almost exactly by a small positive-weight node set.
 
 \begin{figure}[t]
 \centering
 \input{fig_burnside_irf.tex}
-\caption{Burnside asset-pricing example: continuation-value response to a one-standard-deviation shock under the exact analytic benchmark, certainty equivalence (CE), and one-step sigma-point quadrature (UT).}
+\caption{Burnside asset-pricing example: continuation-value response to a one-standard-deviation shock under the exact analytic benchmark, certainty equivalence (CE), and one-step positive-weight sigma-point quadrature (UT) with exact continuation.}
 \label{fig:burnside_irf}
 \end{figure}
 

@@ -68,10 +68,13 @@ inline double burnside_v_ce(const BurnsideParams& p, double x, double tol = 1e-1
   return v;
 }
 
-// One-step UT quadrature over ε_{t+1} with continuation approximated by CE and no further shocks:
-//   v_ut(x) = β E[ exp(a x_{t+1}) (1 + v_ce(x_{t+1})) | x_t=x ]
-inline double burnside_v_ut_one_step(const BurnsideParams& p, double x, double alpha = 1e-2,
-                                     double kappa = 0.0, double beta_ut = 2.0) {
+// One-step positive-weight sigma-point quadrature over ε_{t+1}, holding the continuation exact:
+//   v_ut(x) = β E[ exp(a x_{t+1}) (1 + v_exact(x_{t+1})) | x_t=x ]
+//
+// This isolates the quadrature error in the one-step Gaussian expectation rather than conflating it
+// with an additional certainty-equivalent closure for the continuation term.
+inline double burnside_v_ut_one_step(const BurnsideParams& p, double x, double alpha = 1.0,
+                                     double kappa = 2.0, double beta_ut = 2.0) {
   const double a = 1.0 - p.gamma;
   const double x_mean = (1.0 - p.rho) * p.mu + p.rho * x;
   const auto sp = quadrature::unscented_sigma_points_1d(0.0, p.sigma * p.sigma, alpha, kappa, beta_ut);
@@ -80,11 +83,10 @@ inline double burnside_v_ut_one_step(const BurnsideParams& p, double x, double a
   for (int k = 0; k < sp.points.rows(); ++k) {
     const double eps = sp.points(k, 0);
     const double x1 = x_mean + eps;
-    const double cont = 1.0 + burnside_v_ce(p, x1);
+    const double cont = 1.0 + burnside_v_exact(p, x1);
     acc += sp.w_mean(k) * std::exp(a * x1) * cont;
   }
   return p.beta * acc;
 }
 
 }  // namespace models
-
