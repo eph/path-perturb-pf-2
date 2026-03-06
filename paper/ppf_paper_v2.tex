@@ -108,7 +108,7 @@ Section~\ref{sec:lit} positions PPPF relative to the particle-filter, extended-p
 Section~\ref{sec:ssm} introduces the state-space notation and resolves symbol collisions that would otherwise obscure the exposition.
 Sections~\ref{sec:cond_lg}--\ref{sec:filtering} define the finite-horizon stacked system, derive the conditional affine-Gaussian transition, state the approximation taxonomy, and present the filtering recursion in a form that can be implemented.
 Sections~\ref{sec:theory} and \ref{sec:dominance} discuss which refinement arguments are valid, what they converge to, and when PPPF can dominate a global-solution-based likelihood evaluator under a fixed compute budget.
-Sections~\ref{sec:toy} and \ref{sec:nk_benchmark} contain the verification exercises and the New Keynesian ELB benchmark.
+Sections~\ref{sec:toy} and \ref{sec:nk_benchmark} contain the smooth verification example and the New Keynesian ELB benchmark.
 The appendices collect the implicit-function derivation, the quadrature details, and benchmark-specific remarks.
 
 \section{Related literature}
@@ -655,10 +655,11 @@ Dispersion across repeated runs and ESS are interpreted as Monte Carlo diagnosti
 
 \subsection{Experimental design}
 
-The empirical design combines an analytic verification exercise (Burnside recursion) for the expectation approximation component with a New Keynesian ELB benchmark.
-The Burnside exercise isolates the value of integrating over a curved expectation term.
-The no-ELB verification isolates the filtering layer.
-The ELB benchmark then combines horizon truncation, expectation approximation, local linearization, and regime handling.
+The empirical design has two examples.
+The first is an analytic verification exercise based on Burnside's recursion.
+It is intentionally smooth and isolates the value of integrating over a curved expectation term when kinks and regime switching are absent.
+The second is a New Keynesian benchmark with an effective lower bound.
+That example combines horizon truncation, expectation approximation, local linearization, and regime handling at a genuine kink.
 
 In the NK--ELB experiment, the OccBin extended-path horizon is $H=20$.
 We solve the discretized global benchmark (Tauchen grid) and simulate a dataset of length $T=250$ from that benchmark, adding small independent measurement noise on $(\pi_t,x_t,i_t)$.
@@ -683,7 +684,7 @@ That distinction is essential: the benchmark is a high-quality comparison object
 
 \subsection{Illustrative results}
 
-We begin with an analytic Jensen-style validation based on Burnside's recursion, where an exact benchmark is available.
+We begin with the smooth example, an analytic Jensen-style validation based on Burnside's recursion, where an exact benchmark is available.
 Figure~\ref{fig:burnside_irf} reports impulse responses for the continuation value under the exact benchmark, a certainty-equivalence approximation, and a sigma-point (UT) one-step quadrature approximation.
 The UT approximation tracks curvature effects better than certainty equivalence, illustrating why explicit integration over a low-dimensional shock object can matter even when the underlying state is Gaussian.
 
@@ -694,33 +695,7 @@ The UT approximation tracks curvature effects better than certainty equivalence,
 \label{fig:burnside_irf}
 \end{figure}
 
-As an additional verification exercise in a setting where all methods should agree, we validate the filtering layer on a one-dimensional linear-Gaussian state-space model with known Kalman-filter likelihood.
-In that case, an RBPF with a single mixture component ($K=1$) coincides with the Kalman filter and matches the exact log-likelihood to machine precision.
-A bootstrap particle filter, which replaces analytic Gaussian integration with Monte Carlo integration, approaches the same likelihood as the particle count increases.
-
-To verify that the same logic applies in the New Keynesian environment, we rerun the NK model with the ELB effectively removed (setting $\underline i$ far below any realized policy rate so the constraint never binds) and simulate data from the resulting linear-Gaussian state-space system driven by continuous AR(1) shocks.
-In this case an exact likelihood is available by Kalman filtering on the exogenous state under the implied linear policy mapping.
-The ``exact'' baseline is exact for the same approximate no-ELB model that the filters evaluate, so any discrepancy is purely a filtering error.
-Table~\ref{tab:nk_no_elb_verification} reports that PPPF (degenerating to a single component by setting $\Var(\omega)=0$) matches the Kalman likelihood to numerical precision, while OccBin-PF converges to the same likelihood up to Monte Carlo error.
-
-\begin{table}[t]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lrrrrr}
-\toprule
-Method & Mean loglik & SD loglik & Mean runtime (ms) & SD runtime (ms) & Mean ESS \\
-\midrule
-Kalman (exact; no ELB) & 2345.0 & 0.0 & 0.0 & 0.0 & -- \\
-OccBin-PF (no ELB) & 2342.8 & 1.8 & 745.0 & 10.0 & 196.3 \\
-PPPF-RBPF (no ELB) & 2345.0 & 0.0 & 1226.6 & 8.9 & 2048.0 \\
-\bottomrule
-\end{tabular}
-\caption{NK no-ELB verification exercise: with the ELB inactive the model is linear-Gaussian, and PPPF with $K=1$ and $\Var(\omega)=0$ coincides with the Kalman likelihood. Statistics are reported across $N_{\mathrm{rep}}=10$ repeated filter runs on fixed data, with $T=250$ and $N=2048$ particles.}
-\label{tab:nk_no_elb_verification}
-\end{table}
-
-We then turn to the NK--ELB benchmark.
+We then turn to the kinked example, the NK--ELB benchmark.
 In what follows, OccBin-PF denotes OccBin coupled with a bootstrap particle filter, PPPF-RBPF denotes the PPPF mixture kernel coupled with a Rao--Blackwellized particle filter, and PLC-COPF denotes the PLC-inspired comparator described above.
 Table~\ref{tab:nk_summary} reports summary statistics from the benchmark comparison.
 We simulate data from the discretized global benchmark and compute its exact likelihood by the HMM forward algorithm described above.
