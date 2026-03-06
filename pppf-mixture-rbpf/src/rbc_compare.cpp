@@ -1,4 +1,5 @@
 #include "filters/resampling.hpp"
+#include "quadrature/sigma_points.hpp"
 #include "solvers/newton.hpp"
 #include "statespace/gaussian_mixture.hpp"
 #include "util/io.hpp"
@@ -39,6 +40,7 @@ struct CliOptions {
   int Nk = 121;
   int Nz = 9;
   int horizon = 4;
+  double omega_var = 1.0;
   double k_width = 0.45;
   double z_width_sd = 3.0;
   double meas_sd = 0.02;
@@ -80,7 +82,7 @@ struct PfDiagnostics {
   std::vector<double> ess;
 };
 
-enum class PppfMode { CE, Q5 };
+enum class PppfMode { CE, UTPathBank };
 
 CliOptions parse_args(int argc, char** argv) {
   CliOptions opt;
@@ -102,6 +104,8 @@ CliOptions parse_args(int argc, char** argv) {
       opt.Nz = std::stoi(need(a));
     } else if (a == "--horizon") {
       opt.horizon = std::stoi(need(a));
+    } else if (a == "--omega_var") {
+      opt.omega_var = std::stod(need(a));
     } else if (a == "--k_width") {
       opt.k_width = std::stod(need(a));
     } else if (a == "--z_width_sd") {
@@ -114,6 +118,7 @@ CliOptions parse_args(int argc, char** argv) {
       opt.out_dir = need(a);
     } else if (a == "-h" || a == "--help") {
       std::cout << "Usage: rbc_compare [--T int] [--N int] [--R int] [--Nk int] [--Nz int] [--horizon int] "
+                   "[--omega_var double] "
                    "[--k_width double] [--z_width_sd double] [--meas_sd double] "
                    "[--seed_data uint64] [--out_dir path]\n";
       std::exit(0);
@@ -125,6 +130,7 @@ CliOptions parse_args(int argc, char** argv) {
   if (opt.Nk < 31 || opt.Nk % 2 == 0) throw std::invalid_argument("Nk must be odd and >= 31");
   if (opt.Nz < 5) throw std::invalid_argument("Nz must be >= 5");
   if (opt.horizon < 2) throw std::invalid_argument("horizon must be >= 2");
+  if (!(opt.omega_var >= 0.0)) throw std::invalid_argument("omega_var must be nonnegative");
   if (!(opt.k_width > 0.0) || !(opt.z_width_sd > 0.0) || !(opt.meas_sd > 0.0)) {
     throw std::invalid_argument("widths and meas_sd must be positive");
   }
@@ -441,24 +447,33 @@ Eigen::Vector2d rbc_pppf_mean_map(const RbcSolution& sol, const Eigen::Vector2d&
 }
 
 statespace::GaussianMixtureTransition build_rbc_pppf_mixture(const RbcSolution& sol, const Eigen::Vector2d& x_ref,
-                                                             int horizon, PppfMode mode, double fd_eps = 1e-5) {
-  std::vector<double> node_eps;
-  std::vector<double> node_w;
-  if (mode == PppfMode::CE) {
-    node_eps = {0.0};
-    node_w = {1.0};
+                                                             int horizon, PppfMode mode, double omega_var = 1.0,
+                                                             double fd_eps = 1e-5) {
+  std::vector<Eigen::VectorXd> omega_nodes;
+  std::vector<double> omega_weights;
+  if (mode == PppfMode::CE || omega_var == 0.0) {
+    omega_nodes.push_back(Eigen::VectorXd::Zero(horizon));
+    omega_weights.push_back(1.0);
   } else {
-    node_eps = {-2.8569700138728056, -1.3556261799742659, 0.0, 1.3556261799742659, 2.8569700138728056};
-    node_w = {0.011257411327720689, 0.22207592200561266, 0.5333333333333333, 0.22207592200561266,
-              0.011257411327720689};
+    const Eigen::VectorXd omega_mean = Eigen::VectorXd::Zero(horizon);
+    const Eigen::MatrixXd omega_cov = omega_var * Eigen::MatrixXd::Identity(horizon, horizon);
+    const auto sp = quadrature::unscented_sigma_points(omega_mean, omega_cov, /*alpha=*/1.0,
+                                                       /*kappa=*/2.0, /*beta=*/2.0);
+    omega_nodes.reserve(sp.points.rows());
+    omega_weights.reserve(sp.points.rows());
+    for (int j = 0; j < sp.points.rows(); ++j) {
+      omega_nodes.push_back(sp.points.row(j).transpose());
+      omega_weights.push_back(sp.w_mean(j));
+    }
   }
 
   statespace::GaussianMixtureTransition mix;
-  mix.weights = node_w;
-  mix.components.resize(node_eps.size());
+  mix.weights = omega_weights;
+  mix.components.resize(omega_nodes.size());
 
-  for (int j = 0; j < static_cast<int>(node_eps.size()); ++j) {
-    const std::vector<double> omega_path = {node_eps[j]};
+  for (int j = 0; j < static_cast<int>(omega_nodes.size()); ++j) {
+    std::vector<double> omega_path(horizon, 0.0);
+    for (int h = 0; h < horizon; ++h) omega_path[h] = omega_nodes[j](h);
     const auto f = [&](const Eigen::Vector2d& x) { return rbc_pppf_mean_map(sol, x, omega_path, horizon); };
     const Eigen::Vector2d f0 = f(x_ref);
     Eigen::Matrix2d A;
@@ -641,8 +656,8 @@ PfDiagnostics bootstrap_pf(const RbcSolution& sol, int N, const std::vector<Eige
 }
 
 PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon, int N,
-                              const std::vector<Eigen::VectorXd>& y, double meas_sd, std::uint64_t seed,
-                              double ess_frac = 0.5) {
+                              const std::vector<Eigen::VectorXd>& y, double meas_sd, double omega_var,
+                              std::uint64_t seed, double ess_frac = 0.5) {
   util::Rng rng(seed);
   const double k_ss = rbc_steady_state_k(sol.p);
   const double z_sd = sol.p.sigma / std::sqrt(1.0 - sol.p.rho * sol.p.rho);
@@ -660,7 +675,8 @@ PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon
       x_ref(0) += w_norm(i) * particles[i].k;
       x_ref(1) += w_norm(i) * particles[i].z;
     }
-    const statespace::GaussianMixtureTransition mix = build_rbc_pppf_mixture(sol, x_ref, horizon, mode);
+    const statespace::GaussianMixtureTransition mix =
+        build_rbc_pppf_mixture(sol, x_ref, horizon, mode, omega_var);
 
     Eigen::VectorXd logw_new(N);
     std::vector<RbcState> new_particles(N);
@@ -767,6 +783,7 @@ void write_summary_json(const std::filesystem::path& path,
   oss << "    \"Nk\": " << cli.Nk << ",\n";
   oss << "    \"Nz\": " << cli.Nz << ",\n";
   oss << "    \"horizon\": " << cli.horizon << ",\n";
+  oss << "    \"omega_var\": " << cli.omega_var << ",\n";
   oss << "    \"meas_sd\": " << cli.meas_sd << "\n";
   oss << "  },\n";
   oss << "  \"methods\": {\n";
@@ -840,7 +857,7 @@ int main(int argc, char** argv) {
     };
     const std::vector<std::pair<std::string, PppfMode>> pppf_methods = {
         {"pppf_ce", PppfMode::CE},
-        {"pppf_q5", PppfMode::Q5},
+        {"pppf_ut_paths", PppfMode::UTPathBank},
     };
 
     {
@@ -889,7 +906,7 @@ int main(int argc, char** argv) {
       std::vector<double> ess_means;
       for (int rep = 0; rep < cli.R; ++rep) {
         util::Timer timer;
-        const PfDiagnostics diag = pppf_mixture_pf(sol, mode, cli.horizon, cli.N, y, cli.meas_sd,
+        const PfDiagnostics diag = pppf_mixture_pf(sol, mode, cli.horizon, cli.N, y, cli.meas_sd, cli.omega_var,
                                                    770000ULL + static_cast<std::uint64_t>(rep) * 29ULL);
         const double rt = timer.elapsed_ms();
         loglik_by_method[name].push_back(diag.loglik);
