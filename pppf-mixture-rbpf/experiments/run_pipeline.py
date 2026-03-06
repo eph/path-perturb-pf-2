@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import shutil
 import statistics
@@ -80,6 +81,88 @@ def run_burnside(cfg: dict[str, Any], *, root: Path) -> None:
         copied = copy_glob(out_dir, "irf_*.csv", dst)
         if copied == 0:
             raise RuntimeError(f"burnside_validate produced no irf_*.csv under {out_dir}")
+
+
+def write_burnside_filter_table_tex(path: Path, summary: dict[str, Any]) -> None:
+    methods = summary.get("methods", {})
+    ll_exact = float(methods["grid_exact"]["mean_loglik"])
+    labels = {
+        "grid_exact": "Grid exact",
+        "grid_ce": "Grid CE",
+        "grid_ut": "Grid UT",
+        "pf_exact": "Bootstrap PF, exact",
+        "pf_ce": "Bootstrap PF, CE",
+        "pf_ut": "Bootstrap PF, UT",
+    }
+    order = ["grid_exact", "grid_ce", "grid_ut", "pf_exact", "pf_ce", "pf_ut"]
+
+    lines: list[str] = []
+    lines.append("\\begin{tabular}{lrrrrr}")
+    lines.append("\\toprule")
+    lines.append("Method & Mean loglik & Gap & SD loglik & Mean time (ms) & Mean ESS \\\\")
+    lines.append("\\midrule")
+    for key in order:
+        row = methods.get(key, None)
+        if row is None:
+            continue
+        gap = float(row["mean_loglik"]) - ll_exact
+        sd = float(row["sd_loglik"])
+        ess = float(row.get("mean_ess", -1.0))
+        ess_str = "--" if ess < 0.0 else f"{ess:.1f}"
+        lines.append(
+            f"{labels[key]} & {float(row['mean_loglik']):.1f} & {gap:.1f} & "
+            f"{sd:.1f} & {float(row['mean_runtime_ms']):.1f} & {ess_str} \\\\"
+        )
+    lines.append("\\bottomrule")
+    lines.append("\\end{tabular}")
+    ensure_dir(path.parent)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_burnside_filter(cfg: dict[str, Any], *, root: Path) -> None:
+    if not cfg.get("enabled", False):
+        return
+    out_dir = _resolve(root, cfg.get("out_dir", "output/burnside_filter"))
+    args = [
+        str(root / "build" / "burnside_filter_compare"),
+        "--out_dir",
+        str(out_dir),
+        "--T",
+        str(int(cfg.get("T", 150))),
+        "--N",
+        str(int(cfg.get("N", 512))),
+        "--R",
+        str(int(cfg.get("R", 20))),
+        "--grid_size",
+        str(int(cfg.get("grid_size", 401))),
+        "--grid_width_sd",
+        str(float(cfg.get("grid_width_sd", 6.0))),
+        "--meas_sd",
+        str(float(cfg.get("meas_sd", 10.0))),
+        "--seed_data",
+        str(int(cfg.get("seed_data", 20260306))),
+    ]
+    run_checked(args, cwd=root)
+
+    summary_path = out_dir / "summary.json"
+    if not summary_path.is_file():
+        raise RuntimeError(f"burnside_filter_compare produced no summary.json under {out_dir}")
+    with summary_path.open("r", encoding="utf-8") as f:
+        summary = json.load(f)
+
+    paper_data_dir = cfg.get("paper_data_dir", None)
+    if paper_data_dir is not None:
+        dst = _resolve(root, paper_data_dir)
+        ensure_dir(dst)
+        for name in ["summary.json", "sim_data.csv", "loglik_repeats.csv", "ess.csv"]:
+            src = out_dir / name
+            if not src.is_file():
+                raise RuntimeError(f"missing Burnside filter artifact: {src}")
+            shutil.copy2(src, dst / name)
+
+    paper_table = cfg.get("paper_table", None)
+    if paper_table is not None:
+        write_burnside_filter_table_tex(_resolve(root, paper_table), summary)
 
 
 def run_nk_baseline(cfg: dict[str, Any], *, root: Path) -> None:
@@ -355,6 +438,7 @@ def main() -> int:
         run_checked([str(root / "build" / "linear_gaussian_validate")], cwd=root)
 
     run_burnside(cfg.get("burnside", {}), root=root)
+    run_burnside_filter(cfg.get("burnside_filter", {}), root=root)
 
     nk = cfg.get("nk", {})
     if not isinstance(nk, dict):

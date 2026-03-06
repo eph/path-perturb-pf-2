@@ -14,6 +14,12 @@ add_executable(burnside_validate
 target_include_directories(burnside_validate PRIVATE include)
 target_link_libraries(burnside_validate PRIVATE Eigen3::Eigen)
 
+add_executable(burnside_filter_compare
+  src/burnside_filter_compare.cpp
+)
+target_include_directories(burnside_filter_compare PRIVATE include)
+target_link_libraries(burnside_filter_compare PRIVATE Eigen3::Eigen)
+
 add_executable(nk_compare
   src/nk_compare.cpp
 )

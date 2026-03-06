@@ -9,6 +9,19 @@ shock_sizes = [0.5, 1.0, 2.0]
 out_dir = "output/burnside"
 paper_data_dir = "../paper/data/burnside"
 
+[burnside_filter]
+enabled = true
+T = 150
+N = 512
+R = 20
+grid_size = 401
+grid_width_sd = 6.0
+meas_sd = 10.0
+seed_data = 20260306
+out_dir = "output/burnside_filter"
+paper_data_dir = "../paper/data/burnside_filter"
+paper_table = "../paper/tab_burnside_filter.tex"
+
 [nk.baseline]
 enabled = true
 T = 250
@@ -46,4 +59,3 @@ R = 30
 horizon = 20
 omega_horizon = 1
 seed_data = 20260113
-

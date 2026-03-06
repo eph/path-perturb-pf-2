@@ -33,6 +33,22 @@ We then produce IRFs for `v_t` after a shock to `x_0` of `{0.5σ, 1σ, 2σ}` and
 
 This is a Jensen check: UT tracks the exact IRF better than CE because it captures curvature from `exp(·)`.
 
+### 1b) Burnside smooth nonlinear filtering benchmark
+
+We also embed the same Burnside value function inside a nonlinear state-space model with
+
+```
+y_t = v(x_t) + η_t,   η_t ~ N(0, σ_η^2),
+```
+
+and compare:
+
+- a dense-grid filter using the exact value function,
+- dense-grid filters using CE and UT value-function maps,
+- bootstrap particle filters using the same three maps in the observation density.
+
+This benchmark is designed to separate smooth nonlinear filtering error from the kink-specific issues in the NK-ELB model.
+
 ### 2) New Keynesian (NK) model with an ELB kink
 
 We implement a minimal 3-equation NK model with an occasionally binding constraint:
@@ -117,6 +133,7 @@ This runs the config-driven pipeline in `experiments/configs/paper_refresh.toml`
 Artifacts are written under `output/`:
 
 - `output/burnside/irf_*.csv` and `output/burnside/irf_*.png`
+- `output/burnside_filter/sim_data.csv`, `output/burnside_filter/loglik_repeats.csv`, `output/burnside_filter/ess.csv`, `output/burnside_filter/summary.json`
 - `output/nk/loglik_repeats.csv`, `output/nk/ess.csv`, `output/nk/summary.json`, `output/nk/irf.csv` (includes `*_global`, `*_occbin`, `*_pppf` columns), `output/nk/*.png`
 
 ## Notes on scope / defaults

@@ -1,0 +1,55 @@
+{
+  "config": {
+    "T": 150,
+    "N": 512,
+    "R": 20,
+    "grid_size": 401,
+    "grid_width_sd": 6,
+    "meas_sd": 10,
+    "seed_data": 20260306
+  },
+  "methods": {
+    "grid_ce": {
+      "mean_loglik": -803.06,
+      "sd_loglik": 0,
+      "mean_runtime_ms": 3.55571,
+      "sd_runtime_ms": 0,
+      "mean_ess": -1
+    },
+    "grid_exact": {
+      "mean_loglik": -770.763,
+      "sd_loglik": 0,
+      "mean_runtime_ms": 3.52975,
+      "sd_runtime_ms": 0,
+      "mean_ess": -1
+    },
+    "grid_ut": {
+      "mean_loglik": -770.763,
+      "sd_loglik": 0,
+      "mean_runtime_ms": 3.42088,
+      "sd_runtime_ms": 0,
+      "mean_ess": -1
+    },
+    "pf_ce": {
+      "mean_loglik": -832.321,
+      "sd_loglik": 12.5251,
+      "mean_runtime_ms": 6.05468,
+      "sd_runtime_ms": 0.0551472,
+      "mean_ess": 124.219
+    },
+    "pf_exact": {
+      "mean_loglik": -775.617,
+      "sd_loglik": 6.10903,
+      "mean_runtime_ms": 6.07264,
+      "sd_runtime_ms": 0.0179544,
+      "mean_ess": 129.84
+    },
+    "pf_ut": {
+      "mean_loglik": -775.705,
+      "sd_loglik": 6.03475,
+      "mean_runtime_ms": 6.08287,
+      "sd_runtime_ms": 0.030787,
+      "mean_ess": 129.897
+    }
+  }
+}
