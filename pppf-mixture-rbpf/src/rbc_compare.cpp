@@ -453,11 +453,19 @@ ProposalMixture build_proposal_exact(const RbcSolution& sol, double k_t, double 
 
 ProposalMixture build_proposal_ut(const RbcSolution& sol, double k_t, double prior_mean_z, double y_t_sd,
                                   const Eigen::VectorXd& y_t) {
-  const double a = std::sqrt(3.0) * sol.p.sigma;
-  const std::vector<double> nodes = {prior_mean_z, prior_mean_z + a, prior_mean_z - a};
-  const std::vector<double> w0 = {2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0};
-  Eigen::VectorXd log_terms(3);
-  for (int i = 0; i < 3; ++i) {
+  // Five-node positive-weight Gaussian quadrature for z_t | z_{t-1}.
+  // Nodes/weights correspond to the N(0,1) measure.
+  const std::vector<double> x_std = {
+      -2.8569700138728056, -1.3556261799742659, 0.0, 1.3556261799742659, 2.8569700138728056};
+  const std::vector<double> w0 = {
+      0.011257411327720689, 0.22207592200561266, 0.5333333333333333, 0.22207592200561266,
+      0.011257411327720689};
+  const int K = static_cast<int>(x_std.size());
+  std::vector<double> nodes(K, 0.0);
+  for (int i = 0; i < K; ++i) nodes[i] = prior_mean_z + sol.p.sigma * x_std[i];
+
+  Eigen::VectorXd log_terms(K);
+  for (int i = 0; i < K; ++i) {
     const RbcObs obs = rbc_observables(sol.p, sol, k_t, nodes[i]);
     log_terms(i) = std::log(w0[i]) +
                    util::log_mvnorm_pdf(y_t, obs.mean, y_t_sd * y_t_sd * Eigen::Matrix3d::Identity());
@@ -465,9 +473,9 @@ ProposalMixture build_proposal_ut(const RbcSolution& sol, double k_t, double pri
   const double lse = util::log_sum_exp(log_terms);
   ProposalMixture out;
   out.means = nodes;
-  out.probs.resize(3);
-  for (int i = 0; i < 3; ++i) out.probs[i] = std::exp(log_terms(i) - lse);
-  out.comp_sd = std::max(1e-6, 0.35 * sol.p.sigma);
+  out.probs.resize(K);
+  for (int i = 0; i < K; ++i) out.probs[i] = std::exp(log_terms(i) - lse);
+  out.comp_sd = std::max(1e-6, 0.20 * sol.p.sigma);
   return out;
 }
 
