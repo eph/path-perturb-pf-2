@@ -257,6 +257,21 @@ RbcObs rbc_observables(const RbcParams& p, const RbcSolution& sol, double k, dou
   return out;
 }
 
+Eigen::Matrix<double, 3, 2> rbc_observables_jacobian(const RbcParams& p, const RbcSolution& sol, double k, double z,
+                                                     double fd_eps = 1e-5) {
+  const auto f = [&](double kk, double zz) { return rbc_observables(p, sol, kk, zz).mean; };
+  Eigen::Matrix<double, 3, 2> H;
+  const double hk = fd_eps * std::max(1.0, std::abs(k));
+  const double hz = fd_eps * std::max(1.0, std::abs(z));
+  const Eigen::Vector3d fk_p = f(std::max(1e-8, k + hk), z);
+  const Eigen::Vector3d fk_m = f(std::max(1e-8, k - hk), z);
+  const Eigen::Vector3d fz_p = f(k, z + hz);
+  const Eigen::Vector3d fz_m = f(k, z - hz);
+  H.col(0) = (fk_p - fk_m) / (2.0 * hk);
+  H.col(1) = (fz_p - fz_m) / (2.0 * hz);
+  return H;
+}
+
 RbcSolution solve_rbc_policy(const RbcParams& p, int Nk, int Nz, double k_width, double z_width_sd) {
   RbcSolution sol;
   sol.p = p;
@@ -687,7 +702,7 @@ PfDiagnostics bootstrap_pf(const RbcSolution& sol, int N, const std::vector<Eige
 
 PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon, int N,
                               const std::vector<Eigen::VectorXd>& y, double meas_sd, double omega_var,
-                              int num_paths,
+                              int num_paths, bool tilted_paths,
                               std::uint64_t seed, double ess_frac = 0.5) {
   util::Rng rng(seed);
   const double k_ss = rbc_steady_state_k(sol.p);
@@ -712,15 +727,34 @@ PfDiagnostics pppf_mixture_pf(const RbcSolution& sol, PppfMode mode, int horizon
     Eigen::VectorXd logw_new(N);
     std::vector<RbcState> new_particles(N);
     for (int i = 0; i < N; ++i) {
-      const int j = rng.categorical(mix.weights);
-      const auto& tr = mix.components[j];
       Eigen::Vector2d x_prev;
       x_prev << particles[i].k, particles[i].z;
+
+      std::vector<double> proposal_probs = mix.weights;
+      if (tilted_paths && mix.size() > 1) {
+        Eigen::VectorXd log_terms(mix.size());
+        for (int j = 0; j < mix.size(); ++j) {
+          const auto& tr = mix.components[j];
+          const Eigen::Vector2d mean = tr.A * x_prev + tr.a;
+          const RbcObs obs_mean = rbc_observables(sol.p, sol, std::max(1e-8, mean(0)), mean(1));
+          const Eigen::Matrix<double, 3, 2> Hobs =
+              rbc_observables_jacobian(sol.p, sol, std::max(1e-8, mean(0)), mean(1));
+          Eigen::Matrix3d S = Hobs * tr.Q * Hobs.transpose() + R;
+          S += 1e-10 * Eigen::Matrix3d::Identity();
+          log_terms(j) = std::log(mix.weights[j]) + util::log_mvnorm_pdf(y[t], obs_mean.mean, S);
+        }
+        const double log_norm = util::log_sum_exp(log_terms);
+        for (int j = 0; j < mix.size(); ++j) proposal_probs[j] = std::exp(log_terms(j) - log_norm);
+      }
+
+      const int j = rng.categorical(proposal_probs);
+      const auto& tr = mix.components[j];
       Eigen::Vector2d mean = tr.A * x_prev + tr.a;
       const double k_next = std::max(1e-8, mean(0) + std::sqrt(tr.Q(0, 0)) * rng.normal());
       const double z_next = mean(1) + std::sqrt(tr.Q(1, 1)) * rng.normal();
       const RbcObs obs = rbc_observables(sol.p, sol, k_next, z_next);
-      logw_new(i) = logw(i) + util::log_mvnorm_pdf(y[t], obs.mean, R);
+      const double log_obs = util::log_mvnorm_pdf(y[t], obs.mean, R);
+      logw_new(i) = logw(i) + log_obs + std::log(mix.weights[j]) - std::log(proposal_probs[j]);
       new_particles[i] = RbcState{k_next, z_next};
     }
 
@@ -887,9 +921,15 @@ int main(int argc, char** argv) {
         {"copf_ut", ProposalMode::UT},
         {"copf_ce", ProposalMode::CE},
     };
-    const std::vector<std::pair<std::string, PppfMode>> pppf_methods = {
-        {"pppf_ce", PppfMode::CE},
-        {"pppf_m_paths", PppfMode::PathBank},
+    struct PppfMethodSpec {
+      std::string name;
+      PppfMode mode;
+      bool tilted_paths = false;
+    };
+    const std::vector<PppfMethodSpec> pppf_methods = {
+        {"pppf_ce", PppfMode::CE, false},
+        {"pppf_m_paths", PppfMode::PathBank, false},
+        {"pppf_m_paths_tilted", PppfMode::PathBank, true},
     };
 
     {
@@ -934,26 +974,26 @@ int main(int argc, char** argv) {
       mean_ess_by_method[name] = util::mean(ess_means);
     }
 
-    for (const auto& [name, mode] : pppf_methods) {
+    for (const auto& method : pppf_methods) {
       std::vector<double> ess_means;
       for (int rep = 0; rep < cli.R; ++rep) {
         util::Timer timer;
-        const PfDiagnostics diag = pppf_mixture_pf(sol, mode, cli.horizon, cli.N, y, cli.meas_sd, cli.omega_var,
-                                                   cli.pppf_paths,
+        const PfDiagnostics diag = pppf_mixture_pf(sol, method.mode, cli.horizon, cli.N, y, cli.meas_sd,
+                                                   cli.omega_var, cli.pppf_paths, method.tilted_paths,
                                                    770000ULL + static_cast<std::uint64_t>(rep) * 29ULL);
         const double rt = timer.elapsed_ms();
-        loglik_by_method[name].push_back(diag.loglik);
-        rt_by_method[name].push_back(rt);
-        util::write_csv_row(ll_out, name, rep, diag.loglik, rt);
+        loglik_by_method[method.name].push_back(diag.loglik);
+        rt_by_method[method.name].push_back(rt);
+        util::write_csv_row(ll_out, method.name, rep, diag.loglik, rt);
         double ess_mean = 0.0;
         for (int t = 0; t < static_cast<int>(diag.ess.size()); ++t) {
-          util::write_csv_row(ess_out, name, rep, t, diag.ess[t]);
+          util::write_csv_row(ess_out, method.name, rep, t, diag.ess[t]);
           ess_mean += diag.ess[t];
         }
         ess_mean /= static_cast<double>(diag.ess.size());
         ess_means.push_back(ess_mean);
       }
-      mean_ess_by_method[name] = util::mean(ess_means);
+      mean_ess_by_method[method.name] = util::mean(ess_means);
     }
 
     write_summary_json(cli.out_dir / "summary.json", loglik_by_method, rt_by_method, mean_ess_by_method, cli);
